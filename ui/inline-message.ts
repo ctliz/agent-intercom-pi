@@ -3,6 +3,7 @@ import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { SessionInfo, Message } from "../types.ts";
 import { formatSessionDisplayName, sanitizeDisplayText } from "./session-identity.ts";
+import { formatMessageTiming } from "./timestamps.ts";
 
 export class InlineMessageComponent implements Component {
   private from: SessionInfo;
@@ -11,6 +12,8 @@ export class InlineMessageComponent implements Component {
   private replyCommand?: string;
   private bodyText?: string;
   private collapsed: boolean;
+  private receivedAt?: number;
+  private readAt?: number;
 
   constructor(
     from: SessionInfo,
@@ -19,6 +22,8 @@ export class InlineMessageComponent implements Component {
     replyCommand?: string,
     bodyText?: string,
     collapsed = false,
+    receivedAt?: number,
+    readAt?: number,
   ) {
     this.from = from;
     this.message = message;
@@ -26,6 +31,8 @@ export class InlineMessageComponent implements Component {
     this.replyCommand = replyCommand;
     this.bodyText = bodyText;
     this.collapsed = collapsed;
+    this.receivedAt = receivedAt;
+    this.readAt = readAt;
   }
 
   invalidate(): void {}
@@ -52,6 +59,8 @@ export class InlineMessageComponent implements Component {
       lines.push(this.theme.fg("accent", `│${previewText}${" ".repeat(previewPadding)}│`));
 
       const meta: string[] = [];
+      const timing = formatMessageTiming({ sentAt: this.message.timestamp, receivedAt: this.receivedAt, readAt: this.readAt });
+      if (timing) meta.push(timing);
       if (this.replyCommand) meta.push(`↩ To reply: ${this.replyCommand}`);
       if (this.message.content.attachments?.length) {
         const count = this.message.content.attachments.length;
@@ -100,6 +109,14 @@ export class InlineMessageComponent implements Component {
       const text = truncateToWidth(reply, bodyWidth, "");
       const padding = Math.max(0, bodyWidth - visibleWidth(text));
       lines.push(this.theme.fg("accent", `│${text}${" ".repeat(padding)}│`));
+    }
+
+    const timing = formatMessageTiming({ sentAt: this.message.timestamp, receivedAt: this.receivedAt, readAt: this.readAt });
+    if (timing) {
+      lines.push(this.theme.fg("accent", `│${" ".repeat(bodyWidth)}│`));
+      const timingText = truncateToWidth(this.theme.fg("dim", ` ${timing}`), bodyWidth, "");
+      const timingPadding = Math.max(0, bodyWidth - visibleWidth(timingText));
+      lines.push(this.theme.fg("accent", `│${timingText}${" ".repeat(timingPadding)}│`));
     }
 
     lines.push(this.theme.fg("accent", `╰${borderChar.repeat(bodyWidth)}╯`));

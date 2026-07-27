@@ -1206,11 +1206,13 @@ test("intercom tool renders compact call and result rows", async () => {
     message: "Need a split-tool decision.",
   }, renderTheme, {})), /intercom ask → planner\n  Need a split-tool decision/);
 
+  const sentAt = new Date(2026, 0, 2, 3, 4, 5, 100).getTime();
   const resultText = renderToText(intercomTool.renderResult({
     content: [{ type: "text", text: "Message sent to planner" }],
-    details: { delivered: true, messageId: "abcdef123456" },
+    details: { delivered: true, messageId: "abcdef123456", sentAt, deliveredAt: sentAt + 18 },
   }, { isPartial: false, expanded: false }, renderTheme, { isError: false, expanded: false }));
   assert.match(resultText, /✓ Message sent to planner \(abcdef12\)/);
+  assert.match(resultText, /sent \d{2}:\d{2}:\d{2}\.100 · delivered \d{2}:\d{2}:\d{2}\.118 \(\+18ms\)/);
 
   const errorText = renderToText(intercomTool.renderResult({
     content: [{ type: "text", text: "Missing 'to' or 'message' parameter" }],
@@ -1389,6 +1391,9 @@ test("busy interactive sessions idle-gate top-level asks without aborting", { co
       expectsReply: true,
     });
     assert.equal(delivered.delivered, true);
+    assert.equal(typeof delivered.sentAt, "number");
+    assert.equal(typeof delivered.deliveredAt, "number");
+    assert.ok(delivered.deliveredAt! >= delivered.sentAt!);
     await new Promise((resolve) => setTimeout(resolve, 250));
     assert.equal(abortCount, 0);
     assert.equal(harness.sentMessages.length, 0);
@@ -1442,8 +1447,10 @@ test("idle recipients receive message bursts as one ordered model turn", { concu
     assert.ok(content.indexOf("First burst message") < content.indexOf("Second burst message"));
     assert.ok(content.indexOf("Second burst message") < content.indexOf("Third burst message"));
     assert.match(content, /Preserved attachment/);
-    const details = delivered.message.details as { entries?: Array<{ message?: Message }> };
+    const details = delivered.message.details as { entries?: Array<{ message?: Message; receivedAt?: number; readAt?: number }> };
     assert.deepEqual(details.entries?.map((entry) => entry.message?.id), ["batch-note-1", "batch-note-2", "batch-note-3"]);
+    assert.equal(details.entries?.every((entry) => typeof entry.receivedAt === "number"), true);
+    assert.equal(details.entries?.every((entry) => typeof entry.readAt === "number" && entry.readAt >= entry.receivedAt!), true);
   } finally {
     await harness.emitLifecycle("session_shutdown");
     await cleanup();
@@ -2518,12 +2525,20 @@ test("send waits for receiver acknowledgement and deduplicates retries", { concu
     assert.equal(settled, false);
     assert.equal(receiver.acknowledgeMessage(deliveryId), true);
     const first = await sendPromise;
-    assert.deepEqual(first, {
+    assert.deepEqual({
+      id: first.id,
+      accepted: first.accepted,
+      delivered: first.delivered,
+      deliveryId: first.deliveryId,
+    }, {
       id: "receiver-ack-message",
       accepted: true,
       delivered: true,
       deliveryId,
     });
+    assert.equal(typeof first.sentAt, "number");
+    assert.equal(typeof first.deliveredAt, "number");
+    assert.ok(first.deliveredAt! >= first.sentAt!);
 
     const retry = await planner.send(receiver.sessionId!, {
       messageId: "receiver-ack-message",

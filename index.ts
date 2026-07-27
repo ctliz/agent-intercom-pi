@@ -9,6 +9,7 @@ import { spawnBrokerIfNeeded } from "./broker/spawn.ts";
 import { SessionListOverlay } from "./ui/session-list.ts";
 import { ComposeOverlay, type ComposeResult } from "./ui/compose.ts";
 import { InlineMessageComponent } from "./ui/inline-message.ts";
+import { formatMessageTiming } from "./ui/timestamps.ts";
 import { formatSessionDisplayName, sanitizeDisplayText, sessionOriginLabel, shortestUniqueIdPrefixes } from "./ui/session-identity.ts";
 import { getAskTimeoutMs, getAskWaitMs, loadConfig, type IntercomConfig } from "./config.ts";
 import type { SessionInfo, Message, Attachment } from "./types.ts";
@@ -60,6 +61,7 @@ interface InboundMessageEntry {
   from: SessionInfo;
   message: Message;
   receivedAt: number;
+  readAt?: number;
   replyCommand?: string;
   bodyText: string;
 }
@@ -142,6 +144,8 @@ function deliveryResultDetails(result: SendResult, extra: Record<string, unknown
     messageId: result.id,
     accepted: result.accepted,
     delivered: result.delivered,
+    ...(result.sentAt !== undefined ? { sentAt: result.sentAt } : {}),
+    ...(result.deliveredAt !== undefined ? { deliveredAt: result.deliveredAt } : {}),
     ...(result.deliveryId ? { deliveryId: result.deliveryId } : {}),
     ...(result.code ? { code: result.code } : {}),
     ...(result.reason ? { reason: result.reason } : {}),
@@ -844,18 +848,20 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     if (runtimeStarted && !getLiveContext(runtimeContext, generation)) {
       return;
     }
+    const readAt = Date.now();
+    const displayedEntries = entries.map((entry) => ({ ...entry, readAt }));
     const contexts = entries.map((entry) => replyTracker.recordIncomingMessage(entry.from, entry.message, entry.receivedAt));
     replyTracker.queueTurnContexts(contexts);
-    const content = entries.length === 1
-      ? formatIncomingEntry(entries[0]!)
-      : `**📨 Intercom batch (${entries.length} messages)**\n\n${entries.map((entry, index) => formatIncomingEntry(entry, { index: index + 1, total: entries.length })).join("\n\n---\n\n")}`;
+    const content = displayedEntries.length === 1
+      ? formatIncomingEntry(displayedEntries[0]!)
+      : `**📨 Intercom batch (${displayedEntries.length} messages)**\n\n${displayedEntries.map((entry, index) => formatIncomingEntry(entry, { index: index + 1, total: displayedEntries.length })).join("\n\n---\n\n")}`;
     const triggerTurn = forceTrigger || entries.some((entry) => shouldTriggerInboundMessage(entry));
     pi.sendMessage(
       {
         customType: "intercom_message",
         content,
         display: true,
-        details: { entries } satisfies InboundMessageBatchDetails,
+        details: { entries: displayedEntries } satisfies InboundMessageBatchDetails,
       },
       triggerTurn
         ? { triggerTurn: true }
@@ -1532,10 +1538,14 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     if (!details) return undefined;
     const entries = "entries" in details ? details.entries : [details];
     if (entries.length !== 1) {
-      return new Text(typeof message.content === "string" ? message.content : "Intercom message batch", 0, 0);
+      const batchText = entries.map((entry, index) => {
+        const timing = formatMessageTiming({ sentAt: entry.message.timestamp, receivedAt: entry.receivedAt, readAt: entry.readAt });
+        return `${formatIncomingEntry(entry, { index: index + 1, total: entries.length })}${timing ? `\n\n${theme.fg("dim", timing)}` : ""}`;
+      }).join("\n\n---\n\n");
+      return new Text(batchText, 0, 0);
     }
     const entry = entries[0]!;
-    return new InlineMessageComponent(entry.from, entry.message, theme, entry.replyCommand, entry.bodyText, !options.expanded);
+    return new InlineMessageComponent(entry.from, entry.message, theme, entry.replyCommand, entry.bodyText, !options.expanded, entry.receivedAt, entry.readAt);
   });
 
   const intercomResultToolNames = new Set([
@@ -2230,12 +2240,16 @@ Usage:
       if (isPartial) {
         return new Text(theme.fg("warning", "Intercom working..."), 0, 0);
       }
-      const details = result.details as { delivered?: boolean; error?: boolean; messageId?: string; reason?: string } | undefined;
+      const details = result.details as { delivered?: boolean; error?: boolean; messageId?: string; reason?: string; sentAt?: number; deliveredAt?: number } | undefined;
       const failed = Boolean(context.isError || details?.error === true || details?.delivered === false);
       let text = failed ? theme.fg("error", "✗ ") : theme.fg("success", "✓ ");
       text += theme.fg(failed ? "error" : "text", firstTextContent(result));
       if (details?.messageId && !context.expanded) {
         text += theme.fg("dim", ` (${details.messageId.slice(0, 8)})`);
+      }
+      const timing = formatMessageTiming({ sentAt: details?.sentAt, deliveredAt: details?.deliveredAt });
+      if (timing) {
+        text += "\n" + theme.fg("dim", `  ${timing}`);
       }
       if (details?.reason && context.expanded) {
         text += "\n" + theme.fg("dim", `Reason: ${details.reason}`);
