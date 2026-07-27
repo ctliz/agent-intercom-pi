@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { InlineMessageComponent } from "../ui/inline-message.ts";
+import { formatClockTime } from "../ui/timestamps.ts";
 import type { Message, SessionInfo } from "../types.ts";
 
 const theme = {
@@ -48,6 +49,28 @@ test("expanded inline intercom messages show the full body without collapse cont
   assert.match(rendered, /card/);
   assert.match(rendered, /To reply: intercom/);
   assert.doesNotMatch(rendered, /Ctrl\+O/);
+});
+
+test("inline intercom messages show sent, received, read, and elapsed timings", () => {
+  const sentAt = new Date(2026, 0, 2, 3, 4, 5, 100).getTime();
+  const receivedAt = sentAt + 25;
+  const readAt = receivedAt + 375;
+  const component = new InlineMessageComponent(
+    from,
+    { ...message, timestamp: sentAt },
+    theme as any,
+    undefined,
+    undefined,
+    false,
+    receivedAt,
+    readAt,
+  );
+
+  const rendered = component.render(140).join("\n");
+
+  assert.match(rendered, new RegExp(`sent ${formatClockTime(sentAt).replaceAll(".", "\\.")}`));
+  assert.match(rendered, new RegExp(`received ${formatClockTime(receivedAt).replaceAll(".", "\\.")} \\(\\+25ms\\)`));
+  assert.match(rendered, new RegExp(`read ${formatClockTime(readAt).replaceAll(".", "\\.")} \\(\\+375ms\\)`));
 });
 
 test("collapsed inline intercom messages keep preview, reply hint, and expand key visible", () => {

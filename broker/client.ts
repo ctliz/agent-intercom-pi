@@ -34,6 +34,8 @@ export interface SendResult {
   id: string;
   accepted: boolean;
   delivered: boolean;
+  sentAt?: number;
+  deliveredAt?: number;
   deliveryId?: string;
   code?: DeliveryFailureCode;
   reason?: string;
@@ -175,6 +177,7 @@ export class IntercomClient extends EventEmitter {
   private _sessionId: string | null = null;
   private pendingSends = new Map<string, {
     accepted: boolean;
+    sentAt: number;
     deliveryId?: string;
     resolve: (r: SendResult) => void;
     reject: (e: Error) => void;
@@ -482,7 +485,14 @@ export class IntercomClient extends EventEmitter {
         }
 
         this.pendingSends.delete(messageId);
-        pending.resolve({ id: messageId, accepted: true, delivered: true, deliveryId });
+        pending.resolve({
+          id: messageId,
+          accepted: true,
+          delivered: true,
+          sentAt: pending.sentAt,
+          deliveredAt: Date.now(),
+          deliveryId,
+        });
         break;
       }
 
@@ -509,6 +519,7 @@ export class IntercomClient extends EventEmitter {
           id: messageId,
           accepted,
           delivered: false,
+          sentAt: pending.sentAt,
           code: code as DeliveryFailureCode,
           reason,
           ...(pending.deliveryId ? { deliveryId: pending.deliveryId } : {}),
@@ -732,6 +743,7 @@ export class IntercomClient extends EventEmitter {
       }, 10000);
       this.pendingSends.set(messageId, {
         accepted: false,
+        sentAt: message.timestamp,
         resolve: wrappedResolve,
         reject: wrappedReject,
       });
