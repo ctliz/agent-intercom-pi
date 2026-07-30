@@ -1,3 +1,7 @@
+import { types as nodeUtilTypes } from "node:util";
+import type { BossControlEnvelope } from "@dataforxyz/agent-intercom-core/boss";
+import { parseBossControl } from "./broker/boss-adapter.ts";
+
 export const INTERCOM_CONTROL_REGISTER_EVENT = "intercom:control:register";
 export const INTERCOM_CONTROL_SEND_EVENT = "intercom:control:send";
 export const INTERCOM_CONTROL_RECEIVED_EVENT = "intercom:control";
@@ -12,6 +16,8 @@ export interface IntercomControlEnvelope {
 	data?: unknown;
 }
 
+export type IntercomCommonControlEnvelope = IntercomControlEnvelope | BossControlEnvelope;
+
 export interface IntercomControlRegistration {
 	type: string;
 	version: number;
@@ -20,7 +26,7 @@ export interface IntercomControlRegistration {
 export interface IntercomControlSendRequest {
 	requestId: string;
 	to: string;
-	control: IntercomControlEnvelope;
+	control: IntercomCommonControlEnvelope;
 	fallbackText?: string;
 	messageId?: string;
 }
@@ -37,7 +43,7 @@ export interface IntercomControlReceivedEvent {
 	};
 	messageId: string;
 	receivedAt: number;
-	control: IntercomControlEnvelope;
+	control: IntercomCommonControlEnvelope;
 }
 
 export interface IntercomControlDeliveryEvent {
@@ -51,7 +57,24 @@ export interface IntercomControlDeliveryEvent {
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
+	return typeof value === "object"
+		&& value !== null
+		&& !nodeUtilTypes.isProxy(value)
+		&& !Array.isArray(value);
+}
+
+function isPlainDataWrapper(value: unknown): value is Record<string, unknown> {
+	if (!isObject(value) || Object.getPrototypeOf(value) !== Object.prototype) return false;
+	for (const key of Reflect.ownKeys(value)) {
+		if (typeof key !== "string") return false;
+		const descriptor = Object.getOwnPropertyDescriptor(value, key);
+		if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) return false;
+	}
+	return true;
+}
+
+function dataValue(record: Record<string, unknown>, key: string): unknown {
+	return Object.getOwnPropertyDescriptor(record, key)?.value;
 }
 
 export function isIntercomControlEnvelope(value: unknown): value is IntercomControlEnvelope {
@@ -64,13 +87,24 @@ export function isIntercomControlEnvelope(value: unknown): value is IntercomCont
 	) {
 		return false;
 	}
-	if (!Number.isSafeInteger(value.version) || (value.version as number) < 1) {
-		return false;
-	}
+	if (!Number.isSafeInteger(value.version) || (value.version as number) < 1) return false;
 	if (value.data === undefined) return true;
 	try {
 		const encoded = JSON.stringify(value.data);
 		return encoded !== undefined && Buffer.byteLength(encoded, "utf-8") <= MAX_CONTROL_DATA_BYTES;
+	} catch {
+		return false;
+	}
+}
+
+export function isIntercomCommonControlEnvelope(value: unknown): value is IntercomCommonControlEnvelope {
+	if (typeof value === "object" && value !== null && nodeUtilTypes.isProxy(value)) return false;
+	if (!isObject(value)) return false;
+	try {
+		if (typeof value.type === "string" && value.type.startsWith("boss.")) {
+			return parseBossControl(value) !== null;
+		}
+		return isIntercomControlEnvelope(value);
 	} catch {
 		return false;
 	}
@@ -83,24 +117,29 @@ export function parseIntercomControlRegistration(value: unknown): IntercomContro
 }
 
 export function parseIntercomControlSendRequest(value: unknown): IntercomControlSendRequest | null {
-	if (!isObject(value)) return null;
+	if (!isPlainDataWrapper(value)) return null;
+	const requestId = dataValue(value, "requestId");
+	const to = dataValue(value, "to");
+	const control = dataValue(value, "control");
+	const fallbackTextValue = dataValue(value, "fallbackText");
+	const messageIdValue = dataValue(value, "messageId");
 	if (
-		typeof value.requestId !== "string"
-		|| value.requestId.trim().length === 0
-		|| typeof value.to !== "string"
-		|| value.to.trim().length === 0
-		|| !isIntercomControlEnvelope(value.control)
+		typeof requestId !== "string"
+		|| requestId.trim().length === 0
+		|| typeof to !== "string"
+		|| to.trim().length === 0
+		|| !isIntercomCommonControlEnvelope(control)
 	) {
 		return null;
 	}
-	if (value.fallbackText !== undefined && typeof value.fallbackText !== "string") return null;
-	if (value.messageId !== undefined && (typeof value.messageId !== "string" || value.messageId.length === 0)) return null;
-	const fallbackText = typeof value.fallbackText === "string" ? value.fallbackText : undefined;
-	const messageId = typeof value.messageId === "string" ? value.messageId : undefined;
+	if (fallbackTextValue !== undefined && typeof fallbackTextValue !== "string") return null;
+	if (messageIdValue !== undefined && (typeof messageIdValue !== "string" || messageIdValue.length === 0)) return null;
+	const fallbackText = typeof fallbackTextValue === "string" ? fallbackTextValue : undefined;
+	const messageId = typeof messageIdValue === "string" ? messageIdValue : undefined;
 	return {
-		requestId: value.requestId,
-		to: value.to,
-		control: value.control,
+		requestId,
+		to,
+		control,
 		...(fallbackText !== undefined ? { fallbackText } : {}),
 		...(messageId !== undefined ? { messageId } : {}),
 	};

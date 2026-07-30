@@ -1,10 +1,24 @@
 import { EventEmitter } from "events";
 import net from "net";
 import { randomUUID } from "crypto";
-import { POLICY_SEMANTICS_HASH, POLICY_SEMANTICS_VERSION } from "@dataforxyz/agent-intercom-core";
+import { POLICY_SEMANTICS_VERSION } from "@dataforxyz/agent-intercom-core/policy";
+import { POLICY_SEMANTICS_HASH } from "@dataforxyz/agent-intercom-core/vectors";
 import { writeMessage, createMessageReader } from "./framing.ts";
 import { PersistentOutboundOutbox } from "../outbound-outbox.ts";
-import { isIntercomControlEnvelope, type IntercomControlEnvelope } from "../control.ts";
+import { isIntercomCommonControlEnvelope, type IntercomCommonControlEnvelope } from "../control.ts";
+import {
+  negotiateBossRegistration,
+  parseBossControl,
+  parseBossParticipantRegistrationMetadata,
+  parseBossSessionMetadata,
+  type BossParticipantRegistrationMetadata,
+} from "./boss-adapter.ts";
+import {
+  assertNoProxyGraph,
+  isExactRegisteredFrame,
+  parseSessionRegistration,
+  readExactFrameType,
+} from "./registration.ts";
 import { loadRemoteAccessCredential, writeRemoteSessionCredential, type LoadedRemoteAccessCredential } from "./access-credential.ts";
 import {
   getBrokerConnectTarget,
@@ -24,7 +38,7 @@ import type {
 export interface SendOptions {
   text: string;
   attachments?: Attachment[];
-  control?: IntercomControlEnvelope;
+  control?: IntercomCommonControlEnvelope;
   replyTo?: string;
   expectsReply?: boolean;
   messageId?: string;
@@ -103,13 +117,18 @@ function isMessage(value: unknown): value is Message {
 
   const attachmentsValid = content.attachments === undefined
     || (Array.isArray(content.attachments) && content.attachments.every(isAttachment));
-  const controlValid = content.control === undefined || isIntercomControlEnvelope(content.control);
+  const controlValid = content.control === undefined || isIntercomCommonControlEnvelope(content.control);
   const controlThreadingValid = content.control === undefined
     || (message.replyTo === undefined && message.expectsReply !== true);
   return attachmentsValid && controlValid && controlThreadingValid;
 }
 
 function isSessionInfo(value: unknown): value is SessionInfo {
+  try {
+    assertNoProxyGraph(value);
+  } catch {
+    return false;
+  }
   if (typeof value !== "object" || value === null) {
     return false;
   }
@@ -149,6 +168,13 @@ function isSessionInfo(value: unknown): value is SessionInfo {
   for (const field of ["depth", "maxDepth", "maxChildren"] as const) {
     if (session[field] !== undefined && (typeof session[field] !== "number" || !Number.isSafeInteger(session[field]))) return false;
   }
+  if (session.boss !== undefined) {
+    try {
+      parseBossSessionMetadata(session.boss, session.id as string);
+    } catch {
+      return false;
+    }
+  }
   return true;
 }
 
@@ -186,6 +212,7 @@ export class IntercomClient extends EventEmitter {
   private pendingAskControls = new Map<string, { resolve: (applied: boolean) => void; timeout: NodeJS.Timeout }>();
   private outbox: PersistentOutboundOutbox | null = null;
   private remoteAccessCredential: LoadedRemoteAccessCredential | undefined;
+  private requestedBossRegistration: BossParticipantRegistrationMetadata | undefined;
   private disconnecting = false;
   private disconnectError: Error | null = null;
 
@@ -240,6 +267,18 @@ export class IntercomClient extends EventEmitter {
       return Promise.reject(new Error("Already connected"));
     }
 
+    const parsedSession = parseSessionRegistration(session);
+    if (!parsedSession) return Promise.reject(new Error("Invalid session registration"));
+
+    let requestedBossRegistration: BossParticipantRegistrationMetadata | undefined;
+    try {
+      requestedBossRegistration = parsedSession.boss === undefined
+        ? undefined
+        : parseBossParticipantRegistrationMetadata(parsedSession.boss);
+    } catch (error) {
+      return Promise.reject(toError(error));
+    }
+
     return new Promise((resolve, reject) => {
       let socket: net.Socket;
       let target: BrokerConnectTarget;
@@ -252,6 +291,7 @@ export class IntercomClient extends EventEmitter {
         return;
       }
       this.socket = socket;
+      this.requestedBossRegistration = requestedBossRegistration;
       this.disconnectError = null;
       let settled = false;
       const timeout = setTimeout(() => {
@@ -261,6 +301,7 @@ export class IntercomClient extends EventEmitter {
           if (this.socket === socket) {
             this.socket = null;
           }
+          this.requestedBossRegistration = undefined;
           socket.destroy();
           reject(new Error("Connection timeout"));
         }
@@ -282,6 +323,7 @@ export class IntercomClient extends EventEmitter {
         if (this.socket === socket) {
           this.socket = null;
         }
+        this.requestedBossRegistration = undefined;
         socket.destroy();
         reject(err);
       };
@@ -298,6 +340,7 @@ export class IntercomClient extends EventEmitter {
           this.socket = null;
         }
         this._sessionId = null;
+        this.requestedBossRegistration = undefined;
         this.disconnectError = null;
         if (connectionEstablished && !wasDisconnecting) {
           this.emit("disconnected", disconnectError);
@@ -353,7 +396,7 @@ export class IntercomClient extends EventEmitter {
           type: "register",
           protocol: INTERCOM_PROTOCOL_NAME,
           version: INTERCOM_PROTOCOL_VERSION,
-          session,
+          session: parsedSession,
           ...(!this.remoteAccessCredential && sessionId ? { sessionId } : {}),
           ...(this.remoteAccessCredential ? { access: this.remoteAccessCredential.access } : {}),
           ...(typeof target === "string" ? {} : { stateId: target.stateId }),
@@ -364,6 +407,7 @@ export class IntercomClient extends EventEmitter {
         if (this.socket === socket) {
           this.socket = null;
         }
+        this.requestedBossRegistration = undefined;
         socket.destroy();
         reject(toError(error));
       }
@@ -371,7 +415,8 @@ export class IntercomClient extends EventEmitter {
   }
 
   private handleBrokerMessage(msg: unknown): void {
-    if (typeof msg !== "object" || msg === null || !("type" in msg) || typeof msg.type !== "string") {
+    const messageType = readExactFrameType(msg);
+    if (messageType === null) {
       throw new Error("Invalid broker message");
     }
 
@@ -383,6 +428,14 @@ export class IntercomClient extends EventEmitter {
 
     switch (brokerMessage.type) {
       case "registered": {
+        const registrationMode = this.requestedBossRegistration
+          ? "boss"
+          : this.remoteAccessCredential
+            ? "remote"
+            : "ordinary";
+        if (!isExactRegisteredFrame(brokerMessage, registrationMode)) {
+          throw new Error("Invalid registered message");
+        }
         if (
           typeof brokerMessage.sessionId !== "string"
           || brokerMessage.protocol !== INTERCOM_PROTOCOL_NAME
@@ -419,6 +472,12 @@ export class IntercomClient extends EventEmitter {
               throw new Error("Remote Intercom reconnect identity or generation changed unexpectedly");
             }
           }
+        }
+
+        if (this.requestedBossRegistration) {
+          const negotiation = negotiateBossRegistration(this.requestedBossRegistration, brokerMessage.capabilities);
+          if ("code" in negotiation) throw new Error(`Boss registration negotiation failed: ${negotiation.code}`);
+          parseBossSessionMetadata(brokerMessage.boss, brokerMessage.sessionId);
         }
 
         this._sessionId = brokerMessage.sessionId;
@@ -691,6 +750,17 @@ export class IntercomClient extends EventEmitter {
   }
 
   send(to: string, options: SendOptions): Promise<SendResult> {
+    const messageId = options.messageId ?? randomUUID();
+    if (options.control !== undefined && parseBossControl(options.control) !== null) {
+      return Promise.resolve({
+        id: messageId,
+        accepted: false,
+        delivered: false,
+        code: "CONTROL_DISPATCH_UNAVAILABLE",
+        reason: "Boss typed control is unavailable until the durable Controller delivery authority is installed",
+      });
+    }
+
     let socket: net.Socket;
     try {
       socket = this.requireActiveSocket();
@@ -698,7 +768,6 @@ export class IntercomClient extends EventEmitter {
       return Promise.reject(toError(error));
     }
     
-    const messageId = options.messageId ?? randomUUID();
     if (this.pendingSends.has(messageId)) {
       return Promise.resolve({
         id: messageId,

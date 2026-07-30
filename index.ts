@@ -5,6 +5,7 @@ import { spawn, spawnSync } from "child_process";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import { IntercomClient, type SendResult } from "./broker/client.ts";
+import { parseBossControl } from "./broker/boss-adapter.ts";
 import { spawnBrokerIfNeeded } from "./broker/spawn.ts";
 import { SessionListOverlay } from "./ui/session-list.ts";
 import { ComposeOverlay, type ComposeResult } from "./ui/compose.ts";
@@ -12,7 +13,7 @@ import { InlineMessageComponent } from "./ui/inline-message.ts";
 import { formatMessageTiming } from "./ui/timestamps.ts";
 import { formatSessionDisplayName, sanitizeDisplayText, sessionOriginLabel, shortestUniqueIdPrefixes } from "./ui/session-identity.ts";
 import { getAskTimeoutMs, getAskWaitMs, loadConfig, type IntercomConfig } from "./config.ts";
-import type { SessionInfo, Message, Attachment } from "./types.ts";
+import type { SessionInfo, SessionRegistration, Message, Attachment } from "./types.ts";
 import { ReplyTracker } from "./reply-tracker.ts";
 import { InboundMessageConflictError, PersistentInboundInbox, type StoredInboundMessage } from "./inbound-inbox.ts";
 import { formatIntercomTeam, resolveIntercomTeam } from "./team.ts";
@@ -738,7 +739,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     const outboxStatus = client?.outboxSize ? ` · outbox:${client.outboxSize}` : "";
     return config.status ? `${lifecycleStatus}${queueStatus}${outboxStatus} · ${config.status}` : `${lifecycleStatus}${queueStatus}${outboxStatus}`;
   }
-  function buildRegistration(): Omit<SessionInfo, "id"> {
+  function buildRegistration(): SessionRegistration {
     const liveContext = getLiveContext();
     if (!liveContext || !currentSessionId || sessionStartedAt === null) {
       throw new Error("Intercom runtime not initialized");
@@ -1279,6 +1280,16 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   function relayControlSendRequest(payload: unknown): void {
     const parsed = parseIntercomControlSendRequest(payload);
     if (!parsed) return;
+
+    if (parseBossControl(parsed.control) !== null) {
+      emitControlDelivery({
+        requestId: parsed.requestId,
+        delivered: false,
+        code: "CONTROL_DISPATCH_UNAVAILABLE",
+        error: "Boss typed control is unavailable until the durable Controller delivery authority is installed",
+      });
+      return;
+    }
 
     const relayGeneration = runtimeGeneration;
     void (async () => {
