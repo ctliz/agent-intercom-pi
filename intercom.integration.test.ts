@@ -771,18 +771,43 @@ test("broker protects active stable IDs for legacy local clients without runtime
 });
 
 test("broker owns local trust metadata instead of trusting registration payloads", { concurrency: false }, async () => {
-  const { planner, cleanup } = await setupClients();
-  const raw = await connectRawRegistered("trust-metadata-worker-id", "trust-metadata-worker", {
-    peerUid: 0,
-    trustedLocal: false,
-  });
+  const net = await import("node:net");
+  const { getBrokerSocketPath } = await import("./broker/paths.ts");
+  const { createMessageReader, writeMessage } = await import("./broker/framing.ts");
+  const { cleanup } = await setupClients();
+  const socket = net.connect(getBrokerSocketPath());
 
   try {
-    const session = await waitForSessionId(planner, "trust-metadata-worker-id");
-    assert.equal(session.trustedLocal, process.platform !== "win32");
-    assert.equal(session.peerUid, undefined);
+    await once(socket, "connect");
+    const response = new Promise<Record<string, unknown>>((resolve, reject) => {
+      const reader = createMessageReader((message) => {
+        if (typeof message === "object" && message !== null) resolve(message as Record<string, unknown>);
+      }, reject);
+      socket.on("data", reader);
+    });
+    writeMessage(socket, {
+      type: "register",
+      protocol: "pi-intercom",
+      version: 3,
+      sessionId: "trust-metadata-worker-id",
+      session: {
+        name: "trust-metadata-worker",
+        cwd: repoDir,
+        model: "test-model",
+        pid: process.pid,
+        startedAt: Date.now(),
+        lastActivity: Date.now(),
+        peerUid: 0,
+        trustedLocal: false,
+      },
+    });
+    assert.deepEqual(await response, {
+      type: "error",
+      code: "INVALID_REQUEST",
+      error: "Invalid register message",
+    });
   } finally {
-    raw.socket.destroy();
+    socket.destroy();
     await cleanup();
   }
 });
@@ -844,6 +869,78 @@ test("broker rejects malformed, oversized, or threaded structured controls", { c
     });
     assert.equal(threaded.code, "INVALID_MESSAGE");
   } finally {
+    await cleanup();
+  }
+});
+
+test("Boss typed control is unavailable before exact-ID, display-name, case-fold, or prefix routing", { concurrency: false }, async () => {
+  const { createMessageReader } = await import("./broker/framing.ts");
+  const { orchestrator, cleanup } = await setupClients();
+  const raw = await connectRawRegistered("raw-boss-sender", "raw-boss-sender");
+  const responses: Array<Record<string, unknown>> = [];
+  const waiters = new Map<string, (message: Record<string, unknown>) => void>();
+  const reader = createMessageReader((message) => {
+    if (typeof message !== "object" || message === null) return;
+    const record = message as Record<string, unknown>;
+    if (typeof record.messageId === "string" && waiters.has(record.messageId)) {
+      waiters.get(record.messageId)!(record);
+      waiters.delete(record.messageId);
+    } else {
+      responses.push(record);
+    }
+  });
+  raw.socket.on("data", reader);
+  let targetDeliveries = 0;
+  const onTargetMessage = () => {
+    targetDeliveries += 1;
+  };
+  orchestrator.on("message", onTargetMessage);
+
+  try {
+    const targets = [
+      orchestrator.sessionId!,
+      "orchestrator",
+      "ORCHESTRATOR",
+      orchestrator.sessionId!.slice(0, 8),
+    ];
+    for (const [index, target] of targets.entries()) {
+      const messageId = `unavailable-boss-${index}`;
+      const response = new Promise<Record<string, unknown>>((resolve) => waiters.set(messageId, resolve));
+      raw.writeMessage(raw.socket, {
+        type: "send",
+        to: target,
+        message: {
+          id: messageId,
+          timestamp: Date.now(),
+          content: {
+            text: "Boss control unavailable",
+            control: {
+              type: "boss.assignment.created",
+              version: 1,
+              messageId,
+              bossRunId: "run-a",
+              participantId: "manager-participant",
+              bindingEpoch: 2,
+              idempotencyKey: "stable-boss-idempotency",
+              payload: {},
+            },
+          },
+        },
+      });
+      assert.deepEqual(await response, {
+        type: "delivery_failed",
+        messageId,
+        accepted: false,
+        code: "CONTROL_DISPATCH_UNAVAILABLE",
+        reason: "Boss typed control is unavailable until the durable Controller delivery authority is installed",
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(targetDeliveries, 0);
+    assert.deepEqual(responses, []);
+  } finally {
+    orchestrator.off("message", onTargetMessage);
+    raw.socket.destroy();
     await cleanup();
   }
 });
@@ -1630,6 +1727,42 @@ test("control send bus resolves targets and reports transport delivery", { concu
     await harness.emitLifecycle("session_shutdown");
     await cleanup();
   }
+});
+
+test("control send bus denies Boss dispatch before connection or target resolution", async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const harness = createExtensionHarness("offline-control-manager", {
+    hasUI: true,
+    isIdle: () => true,
+    sessionId: "session-offline-control-manager",
+  });
+  piIntercomExtension(harness.pi as never);
+
+  const delivery = new Promise<IntercomControlDeliveryEvent>((resolve) => {
+    harness.pi.events.on(INTERCOM_CONTROL_DELIVERY_EVENT, (payload) => resolve(payload as IntercomControlDeliveryEvent));
+  });
+  harness.pi.events.emit(INTERCOM_CONTROL_SEND_EVENT, {
+    requestId: "boss-control-unavailable",
+    to: "display-name-must-not-resolve",
+    messageId: "boss-message-a",
+    control: {
+      type: "boss.assignment.created",
+      version: 1,
+      messageId: "boss-message-a",
+      bossRunId: "run-a",
+      participantId: "manager-participant",
+      bindingEpoch: 2,
+      idempotencyKey: "stable-idempotency-key",
+      payload: {},
+    },
+  });
+
+  assert.deepEqual(await delivery, {
+    requestId: "boss-control-unavailable",
+    delivered: false,
+    code: "CONTROL_DISPATCH_UNAVAILABLE",
+    error: "Boss typed control is unavailable until the durable Controller delivery authority is installed",
+  });
 });
 
 test("control send bus rejects the current session as a target", { concurrency: false }, async () => {

@@ -1,4 +1,9 @@
-import type { IntercomControlEnvelope } from "./control.ts";
+import type { BrokerCapabilityAdvertisement } from "@dataforxyz/agent-intercom-core/boss";
+import type { IntercomCommonControlEnvelope } from "./control.ts";
+import type {
+  BossParticipantRegistrationMetadata,
+  BossSessionMetadata,
+} from "./broker/boss-adapter.ts";
 
 export interface SessionInfo {
   id: string;
@@ -20,6 +25,8 @@ export interface SessionInfo {
   depth?: number;
   maxDepth?: number;
   maxChildren?: number;
+  /** Broker-owned live binding; never accepted from SessionRegistration. */
+  boss?: BossSessionMetadata;
 }
 
 export interface Message {
@@ -30,7 +37,7 @@ export interface Message {
   content: {
     text: string;
     attachments?: Attachment[];
-    control?: IntercomControlEnvelope;
+    control?: IntercomCommonControlEnvelope;
   };
 }
 
@@ -44,9 +51,12 @@ export interface Attachment {
 export type SessionRegistration = Omit<
   SessionInfo,
   "id" | "peerUid" | "trustedLocal" | "origin" | "remoteHostId" | "parentSessionId" | "rootSessionId" | "generation" | "canDelegate" | "depth" | "maxDepth" | "maxChildren"
+  | "boss"
 > & {
   /** Ephemeral identity shared only by reconnects from one live runtime. */
   runtimeInstanceId?: string;
+  /** Optional broker-authority metadata. Rejected unless boss-run-v1 is exactly negotiated. */
+  boss?: BossParticipantRegistrationMetadata;
 };
 
 export interface RemoteEnrollmentAccess {
@@ -101,6 +111,7 @@ export interface RemoteAccessContract {
 
 export type DeliveryFailureCode =
   | "INVALID_MESSAGE"
+  | "CONTROL_DISPATCH_UNAVAILABLE"
   | "SESSION_NOT_FOUND"
   | "AMBIGUOUS_TARGET"
   | "SENDER_NOT_FOUND"
@@ -120,6 +131,7 @@ export type BrokerErrorCode =
   | "INVALID_REQUEST"
   | "SESSION_ID_IN_USE"
   | "ACCESS_DENIED"
+  | "BOSS_FEATURE_UNAVAILABLE"
   | "REMOTE_ACCESS_INCOMPATIBLE"
   | "RATE_LIMITED"
   | "TOO_MANY_SESSIONS";
@@ -150,8 +162,8 @@ export type ClientMessage =
   | { type: "presence"; name?: string; status?: string; model?: string };
 
 export type BrokerMessage =
-  | { type: "health_ok"; requestId: string; protocol: string; version: number; endpoint: "local" | "remote"; remoteAccess?: RemoteAccessContract }
-  | { type: "registered"; sessionId: string; protocol: string; version: number; remoteAccess?: RemoteAccessContract; access?: RemoteAccessMetadata }
+  | { type: "health_ok"; requestId: string; protocol: string; version: number; endpoint: "local" | "remote"; capabilities?: BrokerCapabilityAdvertisement; remoteAccess?: RemoteAccessContract }
+  | { type: "registered"; sessionId: string; protocol: string; version: number; capabilities?: BrokerCapabilityAdvertisement; boss?: BossSessionMetadata; remoteAccess?: RemoteAccessContract; access?: RemoteAccessMetadata }
   | { type: "access_control_result"; requestId: string; action: "issue_enrollment"; enrollmentToken: string; expiresAt: number }
   | { type: "access_control_result"; requestId: string; action: "revoke_subtree"; changedPrincipalIds: string[] }
   | { type: "access_control_result"; requestId: string; action: "inspect_tree"; principals: RemotePrincipalSummary[] }

@@ -2,7 +2,9 @@ import net from "net";
 import { existsSync, readFileSync, renameSync, writeFileSync, unlinkSync } from "fs";
 import { join } from "path";
 import { randomUUID } from "crypto";
-import { authorize, POLICY_SEMANTICS_HASH, POLICY_SEMANTICS_VERSION, type PolicyAction, type PolicyState } from "@dataforxyz/agent-intercom-core";
+import { authorize, POLICY_SEMANTICS_VERSION, type PolicyState } from "@dataforxyz/agent-intercom-core/policy";
+import { POLICY_SEMANTICS_HASH } from "@dataforxyz/agent-intercom-core/vectors";
+import type { BossAuthorizationContext } from "@dataforxyz/agent-intercom-core/boss";
 import { writeMessage, createMessageReader } from "./framing.ts";
 import {
   ensureIntercomRuntimeDir,
@@ -24,9 +26,21 @@ import { getAskTimeoutMs } from "../config.ts";
 import { writeDurableJson } from "../durable-json.ts";
 import { acquireBrokerOwnership, hasBrokerOwnership, releaseBrokerOwnership } from "./ownership.ts";
 import { RemoteAccessRegistry, type RemotePrincipalMetadata, type RemotePrincipalRecord } from "./access-registry.ts";
-import { authorizeSessionAction, visibleSessions } from "./authorization.ts";
+import { authorizeSessionAction, visibleSessions, type BrokerSessionAction } from "./authorization.ts";
 import { BrokerAuditLog } from "./audit.ts";
-import { isIntercomControlEnvelope } from "../control.ts";
+import { isIntercomCommonControlEnvelope } from "../control.ts";
+import {
+  brokerCapabilityAdvertisement,
+  correlateBossControl,
+  negotiateBossRegistration,
+  parseBossControl,
+  parseBossParticipantRegistrationMetadata,
+} from "./boss-adapter.ts";
+import {
+  isExactClientRegistrationRequest,
+  parseSessionRegistration,
+  readExactFrameType,
+} from "./registration.ts";
 import type {
   AskCancellationReason,
   BrokerErrorCode,
@@ -71,10 +85,8 @@ const MAX_ATTACHMENTS = 16;
 const MAX_MESSAGE_ID_LENGTH = 256;
 const MAX_TARGET_LENGTH = 512;
 const MAX_SESSION_NAME_LENGTH = 256;
-const MAX_SESSION_CWD_LENGTH = 4096;
 const MAX_SESSION_MODEL_LENGTH = 512;
 const MAX_SESSION_STATUS_LENGTH = 512;
-const MAX_RUNTIME_INSTANCE_ID_LENGTH = 256;
 
 interface ConnectedSession {
   socket: net.Socket;
@@ -121,7 +133,8 @@ interface PendingDelivery {
   to: string;
   senderSocket: net.Socket;
   recipientSocket: net.Socket;
-  action: PolicyAction;
+  action: BrokerSessionAction;
+  bossContext?: BossAuthorizationContext;
   fromGeneration: number;
   toGeneration: number;
   timeout: NodeJS.Timeout;
@@ -131,7 +144,8 @@ interface RecentDelivery {
   fingerprint: string;
   from: string;
   to: string;
-  action: PolicyAction;
+  action: BrokerSessionAction;
+  bossContext?: BossAuthorizationContext;
   fromGeneration: number;
   toGeneration: number;
   retryable: boolean;
@@ -211,10 +225,12 @@ function isMessage(value: unknown): value is Message {
       && content.attachments.length <= MAX_ATTACHMENTS
       && content.attachments.every(isAttachment)
     );
-  const controlValid = content.control === undefined || isIntercomControlEnvelope(content.control);
+  const controlValid = content.control === undefined || isIntercomCommonControlEnvelope(content.control);
   const controlThreadingValid = content.control === undefined
     || (message.replyTo === undefined && message.expectsReply !== true);
-  return attachmentsValid && controlValid && controlThreadingValid;
+  const bossControl = content.control === undefined ? null : parseBossControl(content.control);
+  const bossCorrelationValid = bossControl === null || bossControl.messageId === message.id;
+  return attachmentsValid && controlValid && controlThreadingValid && bossCorrelationValid;
 }
 
 function isSessionId(value: unknown): value is string {
@@ -222,45 +238,7 @@ function isSessionId(value: unknown): value is string {
 }
 
 function isSessionRegistration(value: unknown): value is SessionRegistration {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return false;
-  }
-
-  const session = value as Record<string, unknown>;
-
-  if (
-    typeof session.cwd !== "string"
-    || session.cwd.length === 0
-    || session.cwd.length > MAX_SESSION_CWD_LENGTH
-    || typeof session.model !== "string"
-    || session.model.length === 0
-    || session.model.length > MAX_SESSION_MODEL_LENGTH
-    || typeof session.pid !== "number"
-    || !Number.isFinite(session.pid)
-    || typeof session.startedAt !== "number"
-    || !Number.isFinite(session.startedAt)
-    || typeof session.lastActivity !== "number"
-    || !Number.isFinite(session.lastActivity)
-  ) {
-    return false;
-  }
-
-  if (session.name !== undefined && (typeof session.name !== "string" || session.name.length > MAX_SESSION_NAME_LENGTH)) {
-    return false;
-  }
-  if (
-    session.runtimeInstanceId !== undefined
-    && (
-      typeof session.runtimeInstanceId !== "string"
-      || session.runtimeInstanceId.length === 0
-      || session.runtimeInstanceId.length > MAX_RUNTIME_INSTANCE_ID_LENGTH
-    )
-  ) {
-    return false;
-  }
-
-  return session.status === undefined
-    || (typeof session.status === "string" && session.status.length <= MAX_SESSION_STATUS_LENGTH);
+  return parseSessionRegistration(value) !== null;
 }
 
 function isSameLocalRuntime(previous: ConnectedSession, registration: SessionRegistration): boolean {
@@ -516,7 +494,8 @@ class IntercomBroker {
     currentId: string | null,
     setId: (id: string | null) => void,
   ): void {
-    if (typeof msg !== "object" || msg === null || !("type" in msg) || typeof msg.type !== "string") {
+    const messageType = readExactFrameType(msg);
+    if (messageType === null) {
       throw new Error("Invalid client message");
     }
 
@@ -568,7 +547,7 @@ class IntercomBroker {
 
     switch (clientMessage.type) {
       case "register": {
-        if (!isSessionRegistration(clientMessage.session)) {
+        if (!isExactClientRegistrationRequest(clientMessage) || !isSessionRegistration(clientMessage.session)) {
           throw new Error("Invalid register message");
         }
 
@@ -583,6 +562,23 @@ class IntercomBroker {
           );
           socket.end();
           break;
+        }
+
+        const bossMetadata = clientMessage.session.boss === undefined
+          ? undefined
+          : parseBossParticipantRegistrationMetadata(clientMessage.session.boss);
+        if (bossMetadata !== undefined) {
+          const negotiation = negotiateBossRegistration(bossMetadata, brokerCapabilityAdvertisement());
+          if ("code" in negotiation) {
+            this.sendError(socket, "BOSS_FEATURE_UNAVAILABLE", `Boss registration denied: ${negotiation.code}`);
+            socket.end();
+            break;
+          }
+          if (origin !== "local") {
+            this.sendError(socket, "ACCESS_DENIED", "Boss participant registration requires the protected local authority endpoint");
+            socket.end();
+            break;
+          }
         }
 
         if (currentId) {
@@ -800,7 +796,7 @@ class IntercomBroker {
           throw new Error("Invalid list message");
         }
 
-        const allSessions = Array.from(this.sessions.values(), (session) => session.info);
+        const allSessions = Array.from(this.sessions.values());
         const sessions = visibleSessions(allSessions, currentId!);
         const actor = this.sessions.get(currentId!);
         if (actor?.info.origin === "remote" && sessions.length < allSessions.length) {
@@ -842,7 +838,23 @@ class IntercomBroker {
           break;
         }
 
-        const action: PolicyAction = message.replyTo ? "reply" : message.expectsReply ? "ask" : "send";
+        if (parseBossControl(message.content.control) !== null) {
+          this.sendDeliveryFailure(
+            socket,
+            message.id,
+            false,
+            "CONTROL_DISPATCH_UNAVAILABLE",
+            "Boss typed control is unavailable until the durable Controller delivery authority is installed",
+          );
+          break;
+        }
+
+        const authorization = this.authorizationForMessage(currentId, message);
+        if (!authorization) {
+          this.sendDeliveryFailure(socket, message.id, false, "INVALID_MESSAGE", "Boss control identity or correlation does not match the registered participant");
+          break;
+        }
+        const { action, bossContext } = authorization;
         this.pruneRecentDeliveries();
         const deliveryKey = this.deliveryKey(currentId, message.id);
         const fingerprint = JSON.stringify({
@@ -864,7 +876,7 @@ class IntercomBroker {
             && target
             && (actor.info.generation ?? 1) === recent.fromGeneration
             && (target.info.generation ?? 1) === recent.toGeneration
-            && this.isAuthorized(currentId, recent.action, recent.to)
+            && this.isAuthorized(currentId, recent.action, recent.to, recent.bossContext)
           );
           if (recent.retryable || !authorizationStillValid) {
             this.recentDeliveries.delete(deliveryKey);
@@ -894,7 +906,7 @@ class IntercomBroker {
             && target
             && (actor.info.generation ?? 1) === existing.fromGeneration
             && (target.info.generation ?? 1) === existing.toGeneration
-            && this.isAuthorized(existing.from, existing.action, existing.to)
+            && this.isAuthorized(existing.from, existing.action, existing.to, existing.bossContext)
           ) {
             writeMessage(socket, { type: "delivery_accepted", messageId: message.id, deliveryId: existing.id });
             break;
@@ -910,8 +922,10 @@ class IntercomBroker {
           break;
         }
 
-        const candidates = this.findSessions(clientMessage.to);
-        const targets = candidates.filter((target) => this.isAuthorized(currentId, action, target.info.id));
+        const candidates = bossContext
+          ? this.findExactSession(clientMessage.to)
+          : this.findSessions(clientMessage.to);
+        const targets = candidates.filter((target) => this.isAuthorized(currentId, action, target.info.id, bossContext));
         if (candidates.length > 0 && targets.length === 0) {
           const actor = this.sessions.get(currentId);
           this.audit.tryRecord({
@@ -982,6 +996,7 @@ class IntercomBroker {
             senderSocket: socket,
             recipientSocket: target.socket,
             action,
+            ...(bossContext ? { bossContext } : {}),
             fromGeneration: fromSession.info.generation ?? 1,
             toGeneration: target.info.generation ?? 1,
             timeout,
@@ -1509,13 +1524,37 @@ class IntercomBroker {
     }
   }
 
-  private isAuthorized(actorId: string, action: PolicyAction, targetId: string): boolean {
+  private authorizationForMessage(
+    actorId: string,
+    message: Message,
+  ): { action: BrokerSessionAction; bossContext?: BossAuthorizationContext } | null {
+    const control = message.content.control === undefined ? null : parseBossControl(message.content.control);
+    if (control === null) {
+      return { action: message.replyTo ? "reply" : message.expectsReply ? "ask" : "send" };
+    }
+    const actor = this.sessions.get(actorId)?.info.boss;
+    if (actor === undefined) return null;
+    const correlation = correlateBossControl(actor, control, message.id);
+    if (correlation === null) return null;
+    return {
+      action: "control",
+      bossContext: correlation.context,
+    };
+  }
+
+  private isAuthorized(
+    actorId: string,
+    action: BrokerSessionAction,
+    targetId: string,
+    bossContext?: BossAuthorizationContext,
+  ): boolean {
     if (!this.isCurrentPrincipal(actorId) || !this.isCurrentPrincipal(targetId)) return false;
     return authorizeSessionAction(
-      Array.from(this.sessions.values(), (session) => session.info),
+      this.sessions.values(),
       actorId,
       action,
       targetId,
+      bossContext,
     ).allowed;
   }
 
@@ -1756,7 +1795,7 @@ class IntercomBroker {
       || !recipient
       || (sender.info.generation ?? 1) !== pending.fromGeneration
       || (recipient.info.generation ?? 1) !== pending.toGeneration
-      || !this.isAuthorized(pending.from, pending.action, pending.to)
+      || !this.isAuthorized(pending.from, pending.action, pending.to, pending.bossContext)
     ) {
       this.failPendingDelivery(deliveryId, "SESSION_NOT_FOUND", "Delivery authorization changed before acknowledgement");
       return;
@@ -1774,6 +1813,7 @@ class IntercomBroker {
       from: pending.from,
       to: pending.to,
       action: pending.action,
+      ...(pending.bossContext ? { bossContext: pending.bossContext } : {}),
       fromGeneration: pending.fromGeneration,
       toGeneration: pending.toGeneration,
       retryable: false,
@@ -1809,6 +1849,7 @@ class IntercomBroker {
       from: pending.from,
       to: pending.to,
       action: pending.action,
+      ...(pending.bossContext ? { bossContext: pending.bossContext } : {}),
       fromGeneration: pending.fromGeneration,
       toGeneration: pending.toGeneration,
       retryable: true,
@@ -1854,6 +1895,11 @@ class IntercomBroker {
     return Array.from(this.sessions.entries())
       .filter(([id]) => id.startsWith(nameOrId))
       .map(([, session]) => session);
+  }
+
+  private findExactSession(sessionId: string): ConnectedSession[] {
+    const session = this.sessions.get(sessionId);
+    return session ? [session] : [];
   }
 
   private shutdown(): void {
