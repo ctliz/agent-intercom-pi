@@ -91,6 +91,7 @@ function readProviderVersion(value: unknown): string {
   if (
     typeof value !== "string"
     || value.length > 128
+    || /[\r\n\u2028\u2029]/.test(value)
     || !CANONICAL_SEMANTIC_VERSION.test(value)
   ) {
     invalid("$candidate.providerVersion", "must be a canonical semantic version");
@@ -99,7 +100,7 @@ function readProviderVersion(value: unknown): string {
 }
 
 function readProviderDigest(value: unknown): string {
-  if (typeof value !== "string" || !/^[a-f0-9]{64}$/.test(value)) {
+  if (typeof value !== "string" || value.length !== 64 || !/^[a-f0-9]{64}$/.test(value)) {
     invalid("$candidate.providerDigest", "must be a lowercase SHA-256 digest");
   }
   return value;
