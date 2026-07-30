@@ -10,6 +10,8 @@
     "!*.test.ts",
     "broker/**/*.ts",
     "!broker/**/*.test.ts",
+    "provider/provider.mjs",
+    "!provider/entry.ts",
     "ui/**/*.ts",
     "skills/**/*",
     "!**/*.test.ts",
@@ -19,6 +21,8 @@
     "LICENSE_TRANSITION.md"
   ],
   "scripts": {
+    "build:protected-provider": "node scripts/build-protected-provider.mjs",
+    "prepack": "npm run build:protected-provider",
     "test": "tsx --test broker/*.test.ts *.test.ts test/*.test.ts",
     "test:ci": "tsx --test --test-concurrency=1 broker/*.test.ts *.test.ts test/*.test.ts",
     "typecheck": "tsc --noEmit"

@@ -14,10 +14,24 @@ test("published package includes presentation assets and excludes tests", () => 
   assert.ok(paths.includes("banner.png"));
   assert.ok(paths.includes("broker/broker.ts"));
   assert.ok(paths.includes("broker/registration.ts"));
+  assert.ok(paths.includes("broker/protected-service.ts"));
+  assert.ok(paths.includes("provider/provider.mjs"));
+  assert.equal(paths.includes("provider/entry.ts"), false);
+  assert.equal(paths.includes("scripts/build-protected-provider.mjs"), false);
   assert.ok(paths.includes("inbound-inbox.ts"));
   assert.ok(paths.includes("outbound-outbox.ts"));
   assert.ok(paths.includes("durable-json.ts"));
   assert.equal(paths.some(path => path.endsWith(".test.ts")), false);
+});
+
+test("protected provider is a packaged artifact, not an extension or executable", () => {
+  const root = new URL("..", import.meta.url);
+  const manifest = JSON.parse(readFileSync(new URL("package.json", root), "utf8")) as Record<string, any>;
+  const extension = readFileSync(new URL("index.ts", root), "utf8");
+
+  assert.deepEqual(manifest.pi?.extensions, ["./index.ts"]);
+  assert.equal(manifest.bin, undefined);
+  assert.doesNotMatch(extension, /provider\/provider\.mjs|protected-service/);
 });
 
 test("packed runtime declares the Core Node floor without an SSH runtime dependency", () => {
