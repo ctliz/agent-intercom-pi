@@ -7,6 +7,7 @@ import { EventEmitter, once } from "node:events";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { ReplyTracker } from "./reply-tracker.ts";
 import { PersistentInboundInbox } from "./inbound-inbox.ts";
+import { PersistentOutboundOutbox } from "./outbound-outbox.ts";
 import type { Message, SessionInfo } from "./types.ts";
 import {
   INTERCOM_CONTROL_DELIVERY_EVENT,
@@ -28,13 +29,25 @@ const childEnvKeys = [
   "PI_SUBAGENT_CHILD_INDEX",
   "PI_SUBAGENT_INTERCOM_SESSION_NAME",
 ] as const;
+const bossEnvKeys = [
+  "AGENT_INTERCOM_BOSS_RUN_ID",
+  "AGENT_INTERCOM_BOSS_ROLE",
+  "AGENT_INTERCOM_BOSS_CONTROLLER_TARGET",
+  "AGENT_INTERCOM_BOSS_MANAGER_TARGET",
+  "AGENT_INTERCOM_BOSS_TEAM_TARGETS",
+  "AGENT_INTERCOM_BOSS_VISIBILITY",
+] as const;
 const sharedHomeDir = mkdtempSync(path.join(tmpdir(), "pi-intercom-home-"));
 const previousHome = process.env.HOME;
 const previousUserProfile = process.env.USERPROFILE;
 const previousLegacyTool = process.env.PI_INTERCOM_LEGACY_TOOL;
+const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+const previousBossEnv = new Map(bossEnvKeys.map((key) => [key, process.env[key]]));
 process.env.HOME = sharedHomeDir;
 process.env.USERPROFILE = sharedHomeDir;
 process.env.PI_INTERCOM_LEGACY_TOOL = "1";
+delete process.env.PI_CODING_AGENT_DIR;
+for (const key of bossEnvKeys) delete process.env[key];
 const { IntercomClient } = await import("./broker/client.ts");
 const { chooseContactTarget, formatContactInstruction } = await import("./index.ts");
 process.on("exit", () => {
@@ -42,6 +55,13 @@ process.on("exit", () => {
   process.env.USERPROFILE = previousUserProfile;
   if (previousLegacyTool === undefined) delete process.env.PI_INTERCOM_LEGACY_TOOL;
   else process.env.PI_INTERCOM_LEGACY_TOOL = previousLegacyTool;
+  if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+  for (const key of bossEnvKeys) {
+    const value = previousBossEnv.get(key);
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
   rmSync(sharedHomeDir, { recursive: true, force: true });
 });
 
@@ -229,6 +249,43 @@ async function withChildOrchestratorEnv<T>(metadata: {
       else process.env[key] = value;
     }
   }
+}
+
+async function withBossEnv<T>(metadata: Partial<Record<(typeof bossEnvKeys)[number], string>>, fn: () => T | Promise<T>): Promise<T> {
+  const previous = new Map<string, string | undefined>();
+  for (const key of bossEnvKeys) {
+    previous.set(key, process.env[key]);
+    delete process.env[key];
+  }
+  for (const [key, value] of Object.entries(metadata)) {
+    if (value !== undefined) process.env[key] = value;
+  }
+  try {
+    return await fn();
+  } finally {
+    for (const key of bossEnvKeys) {
+      const value = previous.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+function canonicalBossEnv(
+  suffix: string,
+  role: "manager" | "worker" | "scout" | "adversary",
+  controllerTarget: string,
+  visibility?: "team-only" | "local",
+): Partial<Record<(typeof bossEnvKeys)[number], string>> {
+  const targets = ["manager", "worker", "scout", "adversary"].map((targetRole) => `boss-${targetRole}-${suffix}`);
+  return {
+    AGENT_INTERCOM_BOSS_RUN_ID: `boss-00000000-0000-4000-8000-${suffix}`,
+    AGENT_INTERCOM_BOSS_ROLE: role,
+    AGENT_INTERCOM_BOSS_CONTROLLER_TARGET: controllerTarget,
+    AGENT_INTERCOM_BOSS_MANAGER_TARGET: targets[0],
+    AGENT_INTERCOM_BOSS_TEAM_TARGETS: JSON.stringify(targets),
+    ...(visibility ? { AGENT_INTERCOM_BOSS_VISIBILITY: visibility } : {}),
+  };
 }
 
 interface CapturedToolResult {
@@ -1277,6 +1334,364 @@ test("split intercom tools are the default model-facing schema", { concurrency: 
     if (previous === undefined) delete process.env.PI_INTERCOM_LEGACY_TOOL;
     else process.env.PI_INTERCOM_LEGACY_TOOL = previous;
   }
+});
+
+test("Boss worker scope gates discovery and every model-facing send path by exact live targets", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const { planner, orchestrator, cleanup } = await setupClients();
+  const bossManager = createAcknowledgingClient();
+  const lateAdversary = createAcknowledgingClient();
+  const prefixOutsider = createAcknowledgingClient();
+  let harness: ReturnType<typeof createExtensionHarness> | undefined;
+
+  try {
+    const suffix = "111111111111";
+    const managerId = `boss-manager-${suffix}`;
+    const workerId = `boss-worker-${suffix}`;
+    const adversaryId = `boss-adversary-${suffix}`;
+    const controllerId = orchestrator.sessionId!;
+    await bossManager.connect({
+      name: "boss-manager",
+      cwd: repoDir,
+      model: "test-model",
+      pid: process.pid,
+      startedAt: Date.now(),
+      lastActivity: Date.now(),
+    }, managerId);
+    await prefixOutsider.connect({
+      name: "prefix-outsider",
+      cwd: repoDir,
+      model: "test-model",
+      pid: process.pid,
+      startedAt: Date.now(),
+      lastActivity: Date.now(),
+    }, `${adversaryId}-suffix`);
+    await withBossEnv(canonicalBossEnv(suffix, "worker", controllerId), async () => {
+      let overlayIds: string[] = [];
+      const ui = {
+        notify: () => undefined,
+        custom: async (factory: (...args: any[]) => any) => {
+          const component = factory({}, {}, {}, () => undefined);
+          overlayIds = [...((component as { sessions?: SessionInfo[] }).sessions ?? [])].map((session) => session.id);
+          return undefined;
+        },
+      };
+      const recoveryInbox = new PersistentInboundInbox(workerId);
+      recoveryInbox.enqueue({
+        id: controllerId,
+        name: "orchestrator",
+        cwd: repoDir,
+        model: "test-model",
+        pid: process.pid,
+        startedAt: Date.now(),
+        lastActivity: Date.now(),
+      }, {
+        id: "persisted-controller-ask",
+        timestamp: Date.now(),
+        content: { text: "persisted Controller ask must be discarded" },
+        expectsReply: true,
+      });
+
+      const recoveryOutbox = new PersistentOutboundOutbox(workerId);
+      recoveryOutbox.enqueue(controllerId, {
+        id: "persisted-controller-outbox",
+        timestamp: Date.now(),
+        content: { text: "persisted outbox must not deliver" },
+      });
+      let replayedDeniedOutbox = false;
+      orchestrator.on("message", (_from, message) => {
+        if (message.content.text === "persisted outbox must not deliver") replayedDeniedOutbox = true;
+      });
+
+      harness = createExtensionHarness("boss-worker", { hasUI: true, mode: "tui", ui, sessionId: workerId });
+      piIntercomExtension(harness.pi as never);
+      assert.equal(harness.tools.some((tool) => tool.name === "intercom_list"), false);
+      assert.ok(harness.tools.some((tool) => tool.name === "intercom"), "legacy tool remains available when configured");
+
+      await harness.emitLifecycle("session_start");
+      await waitForSessionByName(planner, "boss-worker");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal(harness.sentMessages.some((entry) => entry.message.content?.includes("persisted Controller ask")), false);
+      assert.equal(harness.entries.some((entry) => entry.type === "intercom_inbox_policy_denied" && /persisted-controller-ask/.test(JSON.stringify(entry.data))), true);
+      assert.equal(replayedDeniedOutbox, false);
+      assert.equal(new PersistentOutboundOutbox(workerId).list().length, 0);
+      const pendingTool = harness.tools.find((tool) => tool.name === "intercom_pending")!;
+      const pendingAfterRecovery = await pendingTool.execute("pending-after-recovery", {}, new AbortController().signal, undefined, harness.ctx);
+      assert.match(pendingAfterRecovery.content[0]?.text ?? "", /No unresolved inbound asks/);
+      const teamTool = harness.tools.find((tool) => tool.name === "intercom_team")!;
+      const firstTeam = await teamTool.execute("team-before-late", {}, new AbortController().signal, undefined, harness.ctx);
+      const firstText = firstTeam.content[0]?.text ?? "";
+      assert.match(firstText, new RegExp(managerId));
+      assert.doesNotMatch(firstText, new RegExp(controllerId));
+      assert.doesNotMatch(firstText, new RegExp(`${adversaryId}|orchestrator`));
+      const statusTool = harness.tools.find((tool) => tool.name === "intercom_status")!;
+      const status = await statusTool.execute("boss-status", {}, new AbortController().signal, undefined, harness.ctx);
+      assert.match(status.content[0]?.text ?? "", /Active sessions: 2/);
+
+      const legacy = harness.tools.find((tool) => tool.name === "intercom")!;
+      const legacyList = await legacy.execute("boss-legacy-list", { action: "list" }, new AbortController().signal, undefined, harness.ctx);
+      assert.equal(legacyList.details?.error, true);
+      assert.match(legacyList.content[0]?.text ?? "", /team-only.*intercom_team/);
+
+      const sendTool = harness.tools.find((tool) => tool.name === "intercom_send")!;
+      const permitted = await sendTool.execute("boss-send-manager", { to: managerId, message: "exact manager target" }, new AbortController().signal, undefined, harness.ctx);
+      assert.notEqual(permitted.details?.error, true);
+      const deniedManagerName = await sendTool.execute("boss-deny-manager-name", { to: "boss-manager", message: "names are not stable targets" }, new AbortController().signal, undefined, harness.ctx);
+      assert.equal(deniedManagerName.details?.error, true);
+      assert.equal(deniedManagerName.details?.code, "BOSS_TEAM_SCOPE_DENIED");
+      const sentEntryCount = harness.entries.filter((entry) => entry.type === "intercom_sent").length;
+
+      for (const target of [controllerId, "orchestrator", "Planner", "outside-id"]) {
+        const denied = await sendTool.execute(`boss-deny-${target}`, { to: target, message: "must be denied" }, new AbortController().signal, undefined, harness.ctx);
+        assert.equal(denied.details?.error, true, `send to ${target}`);
+        assert.match(denied.content[0]?.text ?? "", /Boss team scope denied/);
+        assert.equal(denied.details?.code, "BOSS_TEAM_SCOPE_DENIED");
+      }
+      const prospective = await sendTool.execute("boss-deny-prospective-prefix", { to: adversaryId, message: "must not prefix-route" }, new AbortController().signal, undefined, harness.ctx);
+      assert.equal(prospective.details?.error, true);
+      assert.match(prospective.content[0]?.text ?? "", /exact session ID .* is not connected/);
+
+      const askTool = harness.tools.find((tool) => tool.name === "intercom_ask")!;
+      const deniedAsk = await askTool.execute("boss-deny-ask", { to: controllerId, message: "must be denied" }, new AbortController().signal, undefined, harness.ctx);
+      assert.equal(deniedAsk.details?.error, true);
+      assert.match(deniedAsk.content[0]?.text ?? "", /Boss team scope denied/);
+      assert.equal(deniedAsk.details?.code, "BOSS_TEAM_SCOPE_DENIED");
+
+      const deniedAskByName = await askTool.execute("boss-deny-ask-name", { to: "orchestrator", message: "must be denied" }, new AbortController().signal, undefined, harness.ctx);
+      assert.equal(deniedAskByName.details?.code, "BOSS_TEAM_SCOPE_DENIED");
+
+      const deniedLegacySend = await legacy.execute("boss-deny-legacy", { action: "send", to: controllerId, message: "must be denied" }, new AbortController().signal, undefined, harness.ctx);
+      assert.equal(deniedLegacySend.details?.error, true);
+      assert.match(deniedLegacySend.content[0]?.text ?? "", /Boss team scope denied/);
+      assert.equal(deniedLegacySend.details?.code, "BOSS_TEAM_SCOPE_DENIED");
+
+      const controlDelivery = new Promise<IntercomControlDeliveryEvent>((resolve) => {
+        const unsubscribe = harness!.pi.events.on(INTERCOM_CONTROL_DELIVERY_EVENT, (payload) => {
+          const event = payload as IntercomControlDeliveryEvent;
+          if (event.requestId !== "boss-worker-control-bypass") return;
+          unsubscribe();
+          resolve(event);
+        });
+      });
+      harness.pi.events.emit(INTERCOM_CONTROL_SEND_EVENT, {
+        requestId: "boss-worker-control-bypass",
+        to: controllerId,
+        messageId: "boss-worker-control-message",
+        fallbackText: "must be denied",
+        control: { type: "reload-runtime.request", version: 1, data: { requestId: "boss-worker-reload" } },
+      });
+      const deniedControl = await controlDelivery;
+      assert.equal(deniedControl.delivered, false);
+      assert.match(deniedControl.error ?? "", /Boss team scope denied/);
+
+      harness.pi.events.emit("agent-intercom:lifecycle-send", { to: controllerId, message: "lifecycle bypass must be denied" });
+      harness.pi.events.emit("agent-intercom:lifecycle-send", { to: workerId, message: "self lifecycle pseudo-sender must be denied" });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal(harness.entries.some((entry) => entry.type === "intercom_lifecycle_error" && /Boss team scope denied/.test(JSON.stringify(entry.data))), true);
+      assert.equal(harness.entries.some((entry) => entry.type === "intercom_lifecycle_error" && /local pseudo-sender self delivery/.test(JSON.stringify(entry.data))), true);
+      assert.equal(harness.sentMessages.some((entry) => entry.message.content?.includes("self lifecycle pseudo-sender")), false);
+      assert.equal(harness.entries.filter((entry) => entry.type === "intercom_sent").length, sentEntryCount, "policy denials do not append outbound entries");
+      const statusAfterDenials = await statusTool.execute("boss-status-after-denials", {}, new AbortController().signal, undefined, harness.ctx);
+      assert.match(statusAfterDenials.content[0]?.text ?? "", /Queued outbound messages: 0/);
+
+      const workerSession = await waitForSessionByName(orchestrator, "boss-worker");
+      const managerAsk = await bossManager.send(workerSession.id, { messageId: "manager-allowed-ask", text: "allowed manager ask", expectsReply: true });
+      assert.equal(managerAsk.delivered, true);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const pendingManager = await pendingTool.execute("pending-manager-exact-id", {}, new AbortController().signal, undefined, harness.ctx);
+      assert.match(pendingManager.content[0]?.text ?? "", new RegExp(managerId));
+      const deniedReplyByName = await legacy.execute("boss-deny-reply-name", { action: "reply", to: "boss-manager", message: "names must be denied" }, new AbortController().signal, undefined, harness.ctx);
+      assert.equal(deniedReplyByName.details?.code, "BOSS_TEAM_SCOPE_DENIED");
+      const acceptedExactReply = await legacy.execute("boss-accept-reply-id", { action: "reply", to: managerId, message: "exact ID reply" }, new AbortController().signal, undefined, harness.ctx);
+      assert.notEqual(acceptedExactReply.details?.error, true);
+
+      const deniedControllerInbound = await orchestrator.send(workerSession.id, { messageId: "outside-ask", text: "outside ask", expectsReply: true });
+      const deniedUnrelatedInbound = await planner.send(workerSession.id, { messageId: "unrelated-ask", text: "unrelated ask", expectsReply: true });
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      assert.equal(deniedControllerInbound.delivered, false);
+      assert.equal(deniedUnrelatedInbound.delivered, false);
+      assert.equal(harness.sentMessages.some((entry) => entry.message.content?.includes("outside ask") || entry.message.content?.includes("unrelated ask")), false);
+      const deniedMessageEntries = harness.entries.filter((entry) => entry.type === "intercom_inbox_policy_denied" && !(entry.data as { event?: string }).event);
+      assert.equal(deniedMessageEntries.length, 2);
+      const deniedReply = await legacy.execute("boss-deny-reply", { action: "reply", to: controllerId, message: "must be denied" }, new AbortController().signal, undefined, harness.ctx);
+      assert.equal(deniedReply.details?.error, true);
+      assert.match(deniedReply.content[0]?.text ?? "", /Boss team scope denied/);
+      assert.equal(deniedReply.details?.code, "BOSS_TEAM_SCOPE_DENIED");
+
+      await Promise.resolve(harness.commands.get("intercom")!("", harness.ctx));
+      assert.deepEqual(overlayIds, [managerId]);
+
+      await lateAdversary.connect({
+        name: "late-adversary",
+        cwd: repoDir,
+        model: "test-model",
+        pid: process.pid,
+        startedAt: Date.now(),
+        lastActivity: Date.now(),
+      }, adversaryId);
+      const laterTeam = await teamTool.execute("team-after-late", {}, new AbortController().signal, undefined, harness.ctx);
+      assert.match(laterTeam.content[0]?.text ?? "", new RegExp(adversaryId));
+      assert.doesNotMatch(laterTeam.content[0]?.text ?? "", new RegExp(controllerId));
+    });
+  } finally {
+    if (harness) await harness.emitLifecycle("session_shutdown");
+    await bossManager.disconnect().catch(() => undefined);
+    await lateAdversary.disconnect().catch(() => undefined);
+    await prefixOutsider.disconnect().catch(() => undefined);
+    await cleanup();
+  }
+});
+
+test("malformed Boss metadata omits global discovery and fails closed", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const { cleanup } = await setupClients();
+  let harness: ReturnType<typeof createExtensionHarness> | undefined;
+  try {
+    await withBossEnv({ AGENT_INTERCOM_BOSS_ROLE: "worker" }, async () => {
+      harness = createExtensionHarness("malformed-boss-worker", { sessionId: "malformed-boss-worker-id" });
+      piIntercomExtension(harness.pi as never);
+      assert.equal(harness.tools.some((tool) => tool.name === "intercom_list"), false);
+      await harness.emitLifecycle("session_start");
+
+      const sendTool = harness.tools.find((tool) => tool.name === "intercom_send")!;
+      const denied = await sendTool.execute("malformed-send", { to: "anywhere", message: "no" }, new AbortController().signal, undefined, harness.ctx);
+      assert.equal(denied.details?.error, true);
+      assert.match(denied.content[0]?.text ?? "", /AGENT_INTERCOM_BOSS_RUN_ID/);
+      assert.equal(denied.details?.code, "BOSS_TEAM_METADATA_INVALID");
+
+      const teamTool = harness.tools.find((tool) => tool.name === "intercom_team")!;
+      const team = await teamTool.execute("malformed-team", {}, new AbortController().signal, undefined, harness.ctx);
+      assert.equal(team.details?.error, true);
+      assert.match(team.content[0]?.text ?? "", /AGENT_INTERCOM_BOSS_RUN_ID/);
+    });
+  } finally {
+    if (harness) await harness.emitLifecycle("session_shutdown");
+    await cleanup();
+  }
+});
+
+test("canonical Boss metadata with a mismatched connected self ID becomes deny-all", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const { planner, cleanup } = await setupClients();
+  let harness: ReturnType<typeof createExtensionHarness> | undefined;
+  try {
+    await withBossEnv(canonicalBossEnv("444444444444", "worker", planner.sessionId!), async () => {
+      const staleOutbox = new PersistentOutboundOutbox("wrong-self-id");
+      staleOutbox.enqueue(planner.sessionId!, { id: "wrong-self-outbox", timestamp: Date.now(), content: { text: "wrong self outbox must not replay" } });
+      let replayed = false;
+      planner.on("message", (_from, message) => {
+        if (message.content.text === "wrong self outbox must not replay") replayed = true;
+      });
+      harness = createExtensionHarness("boss-self-impostor", { sessionId: "wrong-self-id" });
+      piIntercomExtension(harness.pi as never);
+      assert.equal(harness.tools.some((tool) => tool.name === "intercom_list"), false);
+      await harness.emitLifecycle("session_start");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal(replayed, false);
+      assert.equal(new PersistentOutboundOutbox("wrong-self-id").list().length, 0);
+      assert.equal((await planner.listSessions()).some((session) => session.id === "wrong-self-id"), false);
+
+      const sendTool = harness.tools.find((tool) => tool.name === "intercom_send")!;
+      const denied = await sendTool.execute("self-mismatch-send", { to: "boss-manager-444444444444", message: "no" }, new AbortController().signal, undefined, harness.ctx);
+      assert.equal(denied.details?.code, "BOSS_TEAM_METADATA_INVALID");
+      assert.match(denied.content[0]?.text ?? "", /identity mismatch/);
+
+      const teamTool = harness.tools.find((tool) => tool.name === "intercom_team")!;
+      const team = await teamTool.execute("self-mismatch-team", {}, new AbortController().signal, undefined, harness.ctx);
+      assert.equal(team.details?.code, "BOSS_TEAM_METADATA_INVALID");
+      assert.match(team.content[0]?.text ?? "", /identity mismatch/);
+    });
+  } finally {
+    if (harness) await harness.emitLifecycle("session_shutdown");
+    await cleanup();
+  }
+});
+
+test("Boss manager may contact the Controller while unrelated local sessions stay hidden", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const { planner, orchestrator, cleanup } = await setupClients();
+  let harness: ReturnType<typeof createExtensionHarness> | undefined;
+  try {
+    const suffix = "222222222222";
+    const managerId = `boss-manager-${suffix}`;
+    const controllerId = orchestrator.sessionId!;
+    await withBossEnv(canonicalBossEnv(suffix, "manager", controllerId), async () => {
+      harness = createExtensionHarness("boss-manager", { sessionId: managerId });
+      piIntercomExtension(harness.pi as never);
+      await harness.emitLifecycle("session_start");
+
+      const sendTool = harness.tools.find((tool) => tool.name === "intercom_send")!;
+      const sent = await sendTool.execute("manager-controller-send", { to: controllerId, message: "manager to Controller" }, new AbortController().signal, undefined, harness.ctx);
+      assert.notEqual(sent.details?.error, true);
+      const deniedByName = await sendTool.execute("manager-controller-name-send", { to: "orchestrator", message: "Controller names are not stable targets" }, new AbortController().signal, undefined, harness.ctx);
+      assert.equal(deniedByName.details?.error, true);
+      assert.equal(deniedByName.details?.code, "BOSS_TEAM_SCOPE_DENIED");
+
+      const managerSession = await waitForSessionByName(orchestrator, "boss-manager");
+      const acceptedControllerInbound = await orchestrator.send(managerSession.id, { messageId: "controller-update", text: "Controller update" });
+      const deniedUnrelatedInbound = await planner.send(managerSession.id, { messageId: "unrelated-update", text: "unrelated update" });
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      assert.equal(acceptedControllerInbound.delivered, true);
+      assert.equal(deniedUnrelatedInbound.delivered, false);
+      assert.equal(harness.sentMessages.some((entry) => entry.message.content?.includes("Controller update")), true);
+      assert.equal(harness.sentMessages.some((entry) => entry.message.content?.includes("unrelated update")), false);
+
+      const teamTool = harness.tools.find((tool) => tool.name === "intercom_team")!;
+      const team = await teamTool.execute("manager-team", {}, new AbortController().signal, undefined, harness.ctx);
+      assert.match(team.content[0]?.text ?? "", new RegExp(`Controller: ${controllerId}`));
+      assert.doesNotMatch(team.content[0]?.text ?? "", new RegExp(planner.sessionId!));
+    });
+  } finally {
+    if (harness) await harness.emitLifecycle("session_shutdown");
+    await cleanup();
+  }
+});
+
+test("Boss local visibility preserves broad exact-ID communication while names and stale outbox replay remain denied", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const { planner, orchestrator, cleanup } = await setupClients();
+  const suffix = "333333333333";
+  const scoutId = `boss-scout-${suffix}`;
+  let local: ReturnType<typeof createExtensionHarness> | undefined;
+  try {
+    await withBossEnv(canonicalBossEnv(suffix, "scout", orchestrator.sessionId!, "local"), async () => {
+      const staleOutbox = new PersistentOutboundOutbox(scoutId);
+      staleOutbox.enqueue(planner.sessionId!, { id: "local-stale-outbox", timestamp: Date.now(), content: { text: "local stale outbox must not replay" } });
+      let replayed = false;
+      planner.on("message", (_from, message) => {
+        if (message.content.text === "local stale outbox must not replay") replayed = true;
+      });
+      local = createExtensionHarness("boss-local-scout", { sessionId: scoutId });
+      piIntercomExtension(local.pi as never);
+      assert.ok(local.tools.some((tool) => tool.name === "intercom_list"));
+      await local.emitLifecycle("session_start");
+      const scoutSession = await waitForSessionByName(planner, "boss-local-scout");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal(replayed, false);
+      assert.equal(new PersistentOutboundOutbox(scoutId).list().length, 0);
+
+      const sendTool = local.tools.find((tool) => tool.name === "intercom_send")!;
+      const exact = await sendTool.execute("local-exact-send", { to: planner.sessionId!, message: "local exact ID" }, new AbortController().signal, undefined, local.ctx);
+      assert.notEqual(exact.details?.error, true);
+      const deniedName = await sendTool.execute("local-name-denied", { to: "Planner", message: "name denied" }, new AbortController().signal, undefined, local.ctx);
+      assert.equal(deniedName.details?.error, true);
+      assert.equal(deniedName.details?.code, "BOSS_TEAM_TARGET_NOT_CONNECTED");
+
+      const inbound = await planner.send(scoutSession.id, { messageId: "local-outsider-inbound", text: "local outsider inbound" });
+      assert.equal(inbound.delivered, true);
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      assert.equal(local.sentMessages.some((entry) => entry.message.content?.includes("local outsider inbound")), true);
+    });
+  } finally {
+    if (local) await local.emitLifecycle("session_shutdown");
+    await cleanup();
+  }
+
+  await withBossEnv({}, () => {
+    const ordinary = createExtensionHarness();
+    piIntercomExtension(ordinary.pi as never);
+    assert.ok(ordinary.tools.some((tool) => tool.name === "intercom_list"));
+  });
 });
 
 test("intercom tool renders compact call and result rows", async () => {

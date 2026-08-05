@@ -44,6 +44,11 @@ export interface SendOptions {
   messageId?: string;
 }
 
+export interface IntercomClientOptions {
+  /** Return true only for durable outbox targets that may be replayed after registration. */
+  authorizeOutboxReplayTarget?: (target: string) => boolean;
+}
+
 export interface SendResult {
   id: string;
   accepted: boolean;
@@ -215,6 +220,10 @@ export class IntercomClient extends EventEmitter {
   private requestedBossRegistration: BossParticipantRegistrationMetadata | undefined;
   private disconnecting = false;
   private disconnectError: Error | null = null;
+
+  constructor(private readonly options: IntercomClientOptions = {}) {
+    super();
+  }
 
   private failPending(error: Error): void {
     for (const pending of this.pendingSends.values()) {
@@ -482,6 +491,12 @@ export class IntercomClient extends EventEmitter {
 
         this._sessionId = brokerMessage.sessionId;
         this.outbox = new PersistentOutboundOutbox(brokerMessage.sessionId);
+        const authorizeReplay = this.options.authorizeOutboxReplayTarget;
+        if (authorizeReplay) {
+          for (const entry of this.outbox.list()) {
+            if (!authorizeReplay(entry.to)) this.outbox.remove(entry.message.id);
+          }
+        }
         this.replayOutbox();
         this.emit("_registered", { type: "registered", sessionId: brokerMessage.sessionId });
         break;

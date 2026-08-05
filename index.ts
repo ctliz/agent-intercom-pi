@@ -16,7 +16,9 @@ import { getAskTimeoutMs, getAskWaitMs, loadConfig, type IntercomConfig } from "
 import type { SessionInfo, SessionRegistration, Message, Attachment } from "./types.ts";
 import { ReplyTracker } from "./reply-tracker.ts";
 import { InboundMessageConflictError, PersistentInboundInbox, type StoredInboundMessage } from "./inbound-inbox.ts";
-import { formatIntercomTeam, resolveIntercomTeam } from "./team.ts";
+import { PersistentOutboundOutbox } from "./outbound-outbox.ts";
+import { formatIntercomTeam, resolveBossIntercomTeam, resolveIntercomTeam } from "./team.ts";
+import { authorizeBossSender, BossTeamScopeError, bossSelfSessionError, filterBossSessions, readBossTeamScope, resolveBossLiveTarget } from "./boss-team-scope.ts";
 import {
   INTERCOM_CONTROL_DELIVERY_EVENT,
   INTERCOM_CONTROL_RECEIVED_EVENT,
@@ -96,6 +98,12 @@ function getErrorMessage(error: unknown): string {
 
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+function toolErrorDetails(error: unknown): { error: true; code?: string } {
+  return error instanceof BossTeamScopeError
+    ? { error: true, code: error.code }
+    : { error: true };
 }
 
 class AskWaitElapsedError extends Error {
@@ -594,6 +602,7 @@ function getNamePollMs(): number {
 export default function piIntercomExtension(pi: ExtensionAPI) {
   let client: IntercomClient | null = null;
   const config: IntercomConfig = loadConfig();
+  const bossTeamScope = readBossTeamScope();
   const askWaitMs = getAskWaitMs();
   let runtimeContext: ExtensionContext | null = null;
   let currentSessionId: string | null = null;
@@ -989,6 +998,18 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     if (!liveContext || !inboxAtReceive) {
       return;
     }
+    const inboundAuthorization = authorizeBossSender(bossTeamScope, from.id, receivingClient.sessionId);
+    if ("code" in inboundAuthorization) {
+      receivingClient.rejectMessage(deliveryId, `${inboundAuthorization.code}: ${inboundAuthorization.error}`);
+      pi.appendEntry("intercom_inbox_policy_denied", {
+        from: from.id,
+        messageId: message.id,
+        code: inboundAuthorization.code,
+        error: inboundAuthorization.error,
+        timestamp: Date.now(),
+      });
+      return;
+    }
     let enqueued;
     try {
       enqueued = inboxAtReceive.enqueue(from, message);
@@ -1021,8 +1042,9 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     const replyWaiter = message.replyTo ? replyWaiters.get(message.replyTo) : undefined;
     if (replyWaiter) {
       const senderTarget = from.name || from.id;
-      const fromMatches = senderTarget.toLowerCase() === replyWaiter.from.toLowerCase()
-        || from.id === replyWaiter.from;
+      const fromMatches = bossTeamScope.present
+        ? from.id === replyWaiter.from
+        : senderTarget.toLowerCase() === replyWaiter.from.toLowerCase() || from.id === replyWaiter.from;
       if (fromMatches) {
         replyWaiter.resolve(message);
         inboxAtReceive.consume([enqueued.entry.key]);
@@ -1053,9 +1075,19 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       });
     });
     nextClient.on("ask_deferred", (messageId: string, fromSessionId: string) => {
+      const authorization = authorizeBossSender(bossTeamScope, fromSessionId, nextClient.sessionId);
+      if ("code" in authorization) {
+        pi.appendEntry("intercom_inbox_policy_denied", { from: fromSessionId, messageId, code: authorization.code, error: authorization.error, event: "ask_deferred", timestamp: Date.now() });
+        return;
+      }
       replyTracker.markDeferred(messageId, fromSessionId);
     });
     nextClient.on("ask_cancelled", (messageId: string, fromSessionId: string) => {
+      const authorization = authorizeBossSender(bossTeamScope, fromSessionId, nextClient.sessionId);
+      if ("code" in authorization) {
+        pi.appendEntry("intercom_inbox_policy_denied", { from: fromSessionId, messageId, code: authorization.code, error: authorization.error, event: "ask_cancelled", timestamp: Date.now() });
+        return;
+      }
       replyTracker.dismissPendingAsk(messageId, fromSessionId);
       inboundInbox?.dismissPendingAsk(messageId, fromSessionId);
       const cancelledKeys = (inboundInbox?.list() ?? [])
@@ -1111,6 +1143,10 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     if (disposed || shuttingDown) {
       throw new Error("Intercom shutting down");
     }
+    if (bossTeamScope.present) {
+      const selfError = currentSessionId ? bossSelfSessionError(bossTeamScope, currentSessionId) : "Boss session identity is unavailable";
+      if (selfError) throw new BossTeamScopeError("BOSS_TEAM_METADATA_INVALID", selfError);
+    }
     if (client && client.isConnected()) {
       return client;
     }
@@ -1124,7 +1160,9 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       return reconnectPromise;
     }
     const nextReconnectPromise = (async () => {
-      const nextClient = new IntercomClient();
+      const nextClient = new IntercomClient({
+        authorizeOutboxReplayTarget: () => !bossTeamScope.present,
+      });
       client = nextClient;
       attachClientHandlers(nextClient);
       try {
@@ -1179,6 +1217,17 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       throw new Error(`Multiple sessions match ID prefix "${nameOrId}". Use a longer session ID prefix.`);
     }
     return null;
+  }
+  async function resolveAuthorizedTarget(activeClient: IntercomClient, target: string): Promise<string> {
+    if (bossTeamScope.present) {
+      // Every Boss participant uses exact stable session IDs. Team-only mode
+      // additionally applies the role allowlist; local visibility broadens the
+      // set of sessions, never the target resolution semantics.
+      const resolution = resolveBossLiveTarget(bossTeamScope, target, await activeClient.listSessions(), activeClient.sessionId);
+      if ("code" in resolution) throw new BossTeamScopeError(resolution.code, resolution.error);
+      return resolution.targetId;
+    }
+    return await resolveSessionTarget(activeClient, target) ?? target;
   }
   async function resolveSupervisorTarget(activeClient: IntercomClient, metadata: ChildOrchestratorMetadata): Promise<string> {
     if (metadata.orchestratorSessionId) {
@@ -1239,11 +1288,38 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     replyTracker.reset();
     runtimeContext = ctx;
     currentSessionId = ctx.sessionManager.getSessionId();
+    if (bossTeamScope.present && bossSelfSessionError(bossTeamScope, currentSessionId)) {
+      const staleOutbox = new PersistentOutboundOutbox(currentSessionId);
+      const removed = staleOutbox.list().length;
+      staleOutbox.clear();
+      if (removed > 0) pi.appendEntry("intercom_outbox_policy_denied", { removed, reason: "invalid Boss metadata or session identity", timestamp: Date.now() });
+    }
     inboundInbox = new PersistentInboundInbox(currentSessionId);
     controlRegistrationGraceUntil = Date.now() + CONTROL_REGISTRATION_GRACE_MS;
+    const initialRecovered = inboundInbox.list();
+    const deniedPendingKeys = new Set<string>();
+    for (const recovered of initialRecovered) {
+      const authorization = authorizeBossSender(bossTeamScope, recovered.from.id, currentSessionId);
+      if ("code" in authorization) {
+        inboundInbox.consume([recovered.key]);
+        inboundInbox.dismissPendingAsk(recovered.message.id, recovered.from.id);
+        deniedPendingKeys.add(`${recovered.from.id}\0${recovered.message.id}`);
+        pi.appendEntry("intercom_inbox_policy_denied", { from: recovered.from.id, messageId: recovered.message.id, code: authorization.code, error: authorization.error, event: "recovery", timestamp: Date.now() });
+      }
+    }
+    for (const pendingAsk of inboundInbox.listPendingAsks()) {
+      const authorization = authorizeBossSender(bossTeamScope, pendingAsk.from.id, currentSessionId);
+      if ("code" in authorization) {
+        inboundInbox.dismissPendingAsk(pendingAsk.message.id, pendingAsk.from.id);
+        const key = `${pendingAsk.from.id}\0${pendingAsk.message.id}`;
+        if (!deniedPendingKeys.has(key)) {
+          pi.appendEntry("intercom_inbox_policy_denied", { from: pendingAsk.from.id, messageId: pendingAsk.message.id, code: authorization.code, error: authorization.error, event: "pending_recovery", timestamp: Date.now() });
+        }
+      }
+    }
     inboundInbox.prunePendingAsks(getAskTimeoutMs());
-    const recoveredMessages = inboundInbox.list();
-    for (const recovered of recoveredMessages) {
+    const authorizedRecovered = inboundInbox.list();
+    for (const recovered of authorizedRecovered) {
       replyTracker.recordIncomingMessage(recovered.from, recovered.message, recovered.receivedAt);
     }
     for (const pendingAsk of inboundInbox.listPendingAsks()) {
@@ -1258,7 +1334,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     agentRunning = false;
     activeTools.clear();
     startNamePoll();
-    if (recoveredMessages.length > 0) scheduleInboundFlush(0);
+    if (authorizedRecovered.length > 0) scheduleInboundFlush(0);
     const startupGeneration = runtimeGeneration;
     startupConnectTimer = setTimeout(() => {
       startupConnectTimer = null;
@@ -1300,7 +1376,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       let target: string;
       try {
         activeClient = await ensureConnected("background");
-        target = await resolveSessionTarget(activeClient, parsed.to) ?? parsed.to;
+        target = await resolveAuthorizedTarget(activeClient, parsed.to);
         if (currentSessionTargetMatches(parsed.to, target, activeClient)) {
           throw new Error("Intercom controls cannot target the current session");
         }
@@ -1363,7 +1439,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       if (!relayStillLive()) {
         return;
       }
-      if (currentSessionTargetMatches(parsed.to)) {
+      if (!bossTeamScope.present && currentSessionTargetMatches(parsed.to)) {
         deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message);
         if (options.acknowledge) emitResultDelivery(parsed.requestId, true);
         return;
@@ -1373,7 +1449,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       let target: string;
       try {
         activeClient = await ensureConnected("background");
-        target = await resolveSessionTarget(activeClient, parsed.to) ?? parsed.to;
+        target = await resolveAuthorizedTarget(activeClient, parsed.to);
       } catch (error) {
         if (!relayStillLive()) return;
         recordSubagentDeliveryError(options.errorEntryType, parsed.to, parsed.message, error);
@@ -1385,6 +1461,12 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         return;
       }
       if (currentSessionTargetMatches(parsed.to, target, activeClient)) {
+        if (bossTeamScope.present) {
+          const error = new Error("Boss team scope denies local pseudo-sender self delivery");
+          recordSubagentDeliveryError(options.errorEntryType, parsed.to, parsed.message, error);
+          if (options.acknowledge) emitResultDelivery(parsed.requestId, false, error);
+          return;
+        }
         deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message);
         if (options.acknowledge) emitResultDelivery(parsed.requestId, true);
         return;
@@ -1650,7 +1732,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         } catch (error) {
           return {
             content: [{ type: "text", text: `Intercom not connected: ${getErrorMessage(error)}` }],
-            details: { error: true },
+            details: toolErrorDetails(error),
           };
         }
 
@@ -1666,11 +1748,22 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         const metadata = childOrchestratorMetadata;
         let sendTo: string;
         try {
-          sendTo = await resolveSupervisorTarget(connectedClient, metadata);
+          if (bossTeamScope.present) {
+            const selfError = bossSelfSessionError(bossTeamScope, connectedClient.sessionId);
+            if (selfError) throw new BossTeamScopeError("BOSS_TEAM_METADATA_INVALID", selfError);
+          }
+          if (bossTeamScope.present) {
+            const exactTarget = metadata.orchestratorSessionId ?? metadata.orchestratorTarget;
+            const resolution = resolveBossLiveTarget(bossTeamScope, exactTarget, await connectedClient.listSessions(), connectedClient.sessionId);
+            if ("code" in resolution) throw new BossTeamScopeError(resolution.code, resolution.error);
+            sendTo = resolution.targetId;
+          } else {
+            sendTo = await resolveSupervisorTarget(connectedClient, metadata);
+          }
         } catch (error) {
           return {
             content: [{ type: "text", text: `Failed to resolve supervisor target: ${getErrorMessage(error)}` }],
-            details: { error: true },
+            details: toolErrorDetails(error),
           };
         }
         if (signal?.aborted) {
@@ -1899,16 +1992,32 @@ Usage:
       } catch (error) {
         return {
           content: [{ type: "text", text: `Intercom not connected: ${getErrorMessage(error)}` }],
-          details: { error: true },
+          details: toolErrorDetails(error),
         };
       }
 
       syncPresenceIdentity(ctx.sessionManager.getSessionId());
 
+      if (bossTeamScope.present) {
+        const selfError = bossSelfSessionError(bossTeamScope, connectedClient.sessionId);
+        if (selfError) {
+          return {
+            content: [{ type: "text", text: `Boss team scope is unavailable: ${selfError}` }],
+            details: { error: true, code: "BOSS_TEAM_METADATA_INVALID" },
+          };
+        }
+      }
+
       const { action, to, message, attachments, replyTo, which } = params;
 
       switch (action) {
         case "list": {
+          if (bossTeamScope.restricted) {
+            const reason = bossTeamScope.valid
+              ? "Global intercom discovery is unavailable in Boss team-only mode; use intercom_team"
+              : `Global intercom discovery is unavailable: ${"error" in bossTeamScope ? bossTeamScope.error : "invalid Boss metadata"}`;
+            return { content: [{ type: "text", text: reason }], details: { error: true } };
+          }
           try {
             const mySessionId = connectedClient.sessionId;
             const sessions = await connectedClient.listSessions();
@@ -1954,7 +2063,7 @@ Usage:
             };
           }
           try {
-            const sendTo = await resolveSessionTarget(connectedClient, to) ?? to;
+            const sendTo = await resolveAuthorizedTarget(connectedClient, to);
             if (sendTo === connectedClient.sessionId) {
               return {
                 content: [{ type: "text", text: "Cannot message the current session" }],
@@ -2003,7 +2112,7 @@ Usage:
           } catch (error) {
             return {
               content: [{ type: "text", text: `Failed to send: ${getErrorMessage(error)}` }],
-              details: { error: true },
+              details: toolErrorDetails(error),
             };
           }
         }
@@ -2032,7 +2141,7 @@ Usage:
           let questionId: string | null = null;
 
           try {
-            const sendTo = await resolveSessionTarget(connectedClient, to) ?? to;
+            const sendTo = await resolveAuthorizedTarget(connectedClient, to);
             if (_signal?.aborted) {
               return {
                 content: [{ type: "text", text: "Cancelled" }],
@@ -2112,7 +2221,7 @@ Usage:
             }
             return {
               content: [{ type: "text", text: `Failed: ${getErrorMessage(error)}` }],
-              details: { error: true },
+              details: toolErrorDetails(error),
             };
           }
         }
@@ -2126,7 +2235,17 @@ Usage:
           }
 
           try {
-            const target = replyTracker.resolveReplyTarget({ to, replyTo, which });
+            let exactReplyTarget = to;
+            if (bossTeamScope.present && to) {
+              const requested = resolveBossLiveTarget(bossTeamScope, to, await connectedClient.listSessions(), connectedClient.sessionId);
+              if ("code" in requested) throw new BossTeamScopeError(requested.code, requested.error);
+              exactReplyTarget = requested.targetId;
+            }
+            const target = replyTracker.resolveReplyTarget({ to: exactReplyTarget, replyTo, which });
+            if (bossTeamScope.present) {
+              const resolution = resolveBossLiveTarget(bossTeamScope, target.from.id, await connectedClient.listSessions(), connectedClient.sessionId);
+              if ("code" in resolution) throw new BossTeamScopeError(resolution.code, resolution.error);
+            }
             if (target.from.id === connectedClient.sessionId) {
               return {
                 content: [{ type: "text", text: "Cannot message the current session" }],
@@ -2145,7 +2264,7 @@ Usage:
                 inboundInbox?.dismissPendingAsk(target.message.id, target.from.id);
               }
               return {
-                content: [{ type: "text", text: `Reply to "${target.from.name || target.from.id}" was not delivered: ${errorText}` }],
+                content: [{ type: "text", text: `Reply to "${bossTeamScope.present ? target.from.id : target.from.name || target.from.id}" was not delivered: ${errorText}` }],
                 details: deliveryResultDetails(result, threadedReplyTo ? { replyTo: threadedReplyTo } : {}),
               };
             }
@@ -2154,19 +2273,19 @@ Usage:
               inboundInbox?.dismissPendingAsk(threadedReplyTo, target.from.id);
             }
             pi.appendEntry("intercom_sent", {
-              to: target.from.name || target.from.id,
+              to: bossTeamScope.present ? target.from.id : target.from.name || target.from.id,
               message: { text: message, ...(threadedReplyTo ? { replyTo: threadedReplyTo } : {}) },
               messageId: result.id,
               timestamp: Date.now(),
             });
             return {
-              content: [{ type: "text", text: `Reply sent to ${target.from.name || target.from.id}` }],
+              content: [{ type: "text", text: `Reply sent to ${bossTeamScope.present ? target.from.id : target.from.name || target.from.id}` }],
               details: deliveryResultDetails(result, threadedReplyTo ? { replyTo: threadedReplyTo } : {}),
             };
           } catch (error) {
             return {
               content: [{ type: "text", text: `Failed to reply: ${getErrorMessage(error)}` }],
-              details: { error: true },
+              details: toolErrorDetails(error),
             };
           }
         }
@@ -2195,7 +2314,7 @@ Usage:
             const preview = message.content.text.replace(/\s+/g, " ").slice(0, 80);
             const elapsedSeconds = Math.max(0, Math.floor((now - receivedAt) / 1000));
             const state = deferredAt ? " · async" : "";
-            return `- ${from.name || from.id}${selector} · ${elapsedSeconds}s ago${state} · ${preview}`;
+            return `- ${bossTeamScope.present ? from.id : from.name || from.id}${selector} · ${elapsedSeconds}s ago${state} · ${preview}`;
           });
           return {
             content: [{ type: "text", text: `**Pending asks:**\n${lines.join("\n")}` }],
@@ -2206,7 +2325,7 @@ Usage:
         case "status": {
           try {
             const mySessionId = connectedClient.sessionId;
-            const sessions = await connectedClient.listSessions();
+            const sessions = filterBossSessions(bossTeamScope, await connectedClient.listSessions(), mySessionId);
             return {
               content: [{
                 type: "text",
@@ -2344,11 +2463,17 @@ Usage:
       try {
         const connectedClient = await ensureConnected("tool");
         syncPresenceIdentity(ctx.sessionManager.getSessionId());
+        if (bossTeamScope.present) {
+          const selfError = bossSelfSessionError(bossTeamScope, connectedClient.sessionId);
+          if (selfError) throw new BossTeamScopeError("BOSS_TEAM_METADATA_INVALID", selfError);
+        }
         const sessions = await connectedClient.listSessions();
-        const team = await resolveIntercomTeam({ selfId: connectedClient.sessionId, sessions });
+        const team = bossTeamScope.restricted
+          ? resolveBossIntercomTeam({ selfId: connectedClient.sessionId, sessions, scope: bossTeamScope })
+          : await resolveIntercomTeam({ selfId: connectedClient.sessionId, sessions });
         return { content: [{ type: "text", text: formatIntercomTeam(team) }], details: team };
       } catch (error) {
-        return { content: [{ type: "text", text: `Failed to resolve intercom team: ${getErrorMessage(error)}` }], details: { error: true } };
+        return { content: [{ type: "text", text: `Failed to resolve intercom team: ${getErrorMessage(error)}` }], details: toolErrorDetails(error) };
       }
     },
     renderCall(_args, theme) {
@@ -2367,6 +2492,7 @@ Usage:
     { name: "intercom_pending", label: "Intercom Pending", action: "pending", description: "List unresolved inbound intercom asks. This does not list questions you sent to other sessions.", promptSnippet: "List unresolved inbound asks waiting for your reply." },
     { name: "intercom_status", label: "Intercom Status", action: "status", description: "Show this session's intercom connection status.", promptSnippet: "Show intercom connection status." },
   ] as const) {
+    if (definition.name === "intercom_list" && bossTeamScope.restricted) continue;
     pi.registerTool({
       name: definition.name,
       label: definition.label,
@@ -2394,9 +2520,13 @@ Usage:
     if (!getLiveContext(ctx, generation)) return undefined;
     syncPresenceIdentity(ctx.sessionManager.getSessionId());
     try {
+      if (bossTeamScope.present) {
+        const selfError = bossSelfSessionError(bossTeamScope, contactClient.sessionId);
+        if (selfError) throw new BossTeamScopeError("BOSS_TEAM_METADATA_INVALID", selfError);
+      }
       const sessions = await contactClient.listSessions();
       const currentSession = sessions.find(s => s.id === contactClient.sessionId);
-      if (!currentSession) {
+      if (!currentSession || bossTeamScope.present) {
         return { target: contactClient.sessionId, id: contactClient.sessionId, duplicateName: false };
       }
       return chooseContactTarget(currentSession, sessions);
@@ -2458,13 +2588,22 @@ Usage:
 
     syncPresenceIdentity(ctx.sessionManager.getSessionId());
 
+    if (bossTeamScope.present) {
+      const selfError = bossSelfSessionError(bossTeamScope, overlayClient.sessionId);
+      if (selfError) {
+        notifyIfLive(ctx, `Intercom unavailable: ${selfError}`, "error", overlayGeneration);
+        return;
+      }
+    }
+
     let currentSession: SessionInfo;
     let sessions: SessionInfo[];
     let duplicates: Set<string>;
     try {
       const mySessionId = overlayClient.sessionId;
-      const allSessions = await overlayClient.listSessions();
+      const listedSessions = await overlayClient.listSessions();
       if (!getLiveContext(ctx, overlayGeneration)) return;
+      const allSessions = filterBossSessions(bossTeamScope, listedSessions, mySessionId);
       const foundCurrentSession = allSessions.find(s => s.id === mySessionId);
       if (!foundCurrentSession) {
         notifyIfLive(ctx, "Current session is missing from intercom session list", "error", overlayGeneration);

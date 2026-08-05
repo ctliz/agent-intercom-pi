@@ -441,6 +441,23 @@ The broker refuses a second unresolved `intercom_ask` from one session to the sa
 
 The deprecated monolithic `intercom({ action: ... })` tool is hidden by default. Enable `legacyTool` only for temporary compatibility.
 
+### Trusted-local Boss team scope
+
+Boss-launched Pi sessions can provide this advisory environment contract:
+
+| Variable | Value |
+|----------|-------|
+| `AGENT_INTERCOM_BOSS_RUN_ID` | Canonical lowercase `boss-<UUID>` run identifier |
+| `AGENT_INTERCOM_BOSS_ROLE` | `manager`, `worker`, `scout`, or `adversary` |
+| `AGENT_INTERCOM_BOSS_CONTROLLER_TARGET` | Exact stable Controller session ID |
+| `AGENT_INTERCOM_BOSS_MANAGER_TARGET` | Canonical `boss-manager-<run-suffix>` session ID |
+| `AGENT_INTERCOM_BOSS_TEAM_TARGETS` | JSON array containing exactly the canonical Manager, Worker, Scout, and prospective Adversary session IDs |
+| `AGENT_INTERCOM_BOSS_VISIBILITY` | `team-only` or `local`; defaults to `team-only` when Boss metadata is present |
+
+In `team-only` mode, `intercom_team` shows only live canonical teammates. A Manager also sees and may contact the exact creating Controller; worker, scout, and adversary roles cannot contact that Controller. Global `intercom_list` discovery is not registered, the legacy list action is denied, and `/intercom` / Alt+M show the same permitted live set. Outbound sends, asks, replies, overlay delivery, and inbound messages use exact stable session IDs only: names, case folding, and ID prefixes are rejected. Inbound policy is applied before inbox persistence, reply tracking, activity events, or model triggering. Boss sessions discard persisted outbound messages instead of replaying them after reconnect, because broker replay cannot independently prove that a stored string still denotes the intended exact live ID. The prospective Adversary appears only after its canonical exact ID connects.
+
+The contract is all-or-nothing: if any Boss variable is present but metadata is incomplete, malformed, noncanonical, or inconsistent with the connected session's declared role, discovery and delivery fail closed. `AGENT_INTERCOM_BOSS_VISIBILITY=local` broadens discovery and communication to local sessions but still requires exact stable IDs. TRUSTED LOCAL MODE — same-user agents and local files are trusted; evidence is advisory, not tamper-proof. Team metadata is advisory trusted-local scoping, not broker-enforced hostile-agent isolation.
+
 ## Keyboard Shortcuts
 
 | Key | Action |

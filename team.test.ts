@@ -24,3 +24,12 @@ test("intercom team resolves the current manager and live coworkers after adopti
     assert.deepEqual(adopted.coworkers.map((entry) => entry.id), ["other"]);
   } finally { await rm(agentDir, { recursive: true, force: true }); }
 });
+
+test("ordinary manager formatting does not invent Boss Controller metadata", () => {
+  const text = formatIntercomTeam({
+    self: { id: "ordinary-manager", isManager: true },
+    manager: { target: "ordinary-manager", connected: true },
+    coworkers: [],
+  });
+  assert.doesNotMatch(text, /Controller/);
+});
