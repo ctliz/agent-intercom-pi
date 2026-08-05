@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { getAgentDirPath } from "./broker/paths.ts";
+import { bossSelfSessionError, resolveBossLiveSession, type BossTeamScope } from "./boss-team-scope.ts";
 
 export interface TeamSession {
   id: string;
@@ -31,6 +32,7 @@ export interface IntercomTeam {
   teamId?: string;
   self: { id: string; workerId?: string; isManager: boolean };
   manager?: { target: string; connected: boolean };
+  controller?: { target: string; connected: boolean };
   coworkers: TeamMember[];
 }
 
@@ -100,6 +102,48 @@ export async function resolveIntercomTeam(input: {
   };
 }
 
+export function resolveBossIntercomTeam(input: {
+  selfId: string;
+  sessions: TeamSession[];
+  scope: BossTeamScope;
+}): IntercomTeam {
+  const { scope } = input;
+  if (!scope.present || !scope.valid || !scope.restricted) {
+    throw new Error("error" in scope ? scope.error : "Boss team-only metadata is not active");
+  }
+  const selfError = bossSelfSessionError(scope, input.selfId);
+  if (selfError) throw new Error(selfError);
+
+  const isManager = scope.role === "manager";
+  const managerSession = resolveBossLiveSession(input.sessions, scope.managerTarget);
+  const controllerSession = resolveBossLiveSession(input.sessions, scope.controllerTarget);
+  const manager = isManager
+    ? { target: input.selfId, connected: true }
+    : managerSession
+      ? { target: scope.managerTarget, connected: true }
+      : undefined;
+  const controller = isManager && controllerSession
+    ? { target: scope.controllerTarget, connected: true }
+    : undefined;
+  const excludedIds = new Set([input.selfId, managerSession?.id, controllerSession?.id].filter((id): id is string => Boolean(id)));
+  const coworkerIds = new Set<string>();
+  const coworkers: TeamMember[] = [];
+  for (const target of scope.teamTargets) {
+    const session = resolveBossLiveSession(input.sessions, target);
+    if (!session || excludedIds.has(session.id) || coworkerIds.has(session.id)) continue;
+    coworkerIds.add(session.id);
+    coworkers.push({ id: session.id, target, connected: true });
+  }
+
+  return {
+    ...(manager ? { teamId: manager.target } : {}),
+    self: { id: input.selfId, isManager },
+    ...(manager ? { manager } : {}),
+    ...(controller ? { controller } : {}),
+    coworkers,
+  };
+}
+
 export function formatIntercomTeam(team: IntercomTeam): string {
   const manager = team.manager
     ? `${team.manager.target} [${team.manager.connected ? "connected" : "not connected"}]`
@@ -108,6 +152,9 @@ export function formatIntercomTeam(team: IntercomTeam): string {
     `Manager: ${manager}`,
     `You: ${team.self.id}${team.self.isManager ? " [manager]" : ""}`,
   ];
+  if (team.controller) {
+    lines.push(`Controller: ${team.controller.target} [connected]`);
+  }
   if (team.coworkers.length === 0) {
     lines.push("Coworkers: none");
   } else {
