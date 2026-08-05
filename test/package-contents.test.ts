@@ -34,14 +34,17 @@ test("protected provider is a packaged artifact, not an extension or executable"
   assert.doesNotMatch(extension, /provider\/provider\.mjs|protected-service/);
 });
 
-test("packed runtime declares the Core Node floor without an SSH runtime dependency", () => {
+test("packed runtime installs the exact Core build without an SSH dependency", () => {
   const root = new URL("..", import.meta.url);
   const manifest = JSON.parse(readFileSync(new URL("package.json", root), "utf8")) as Record<string, any>;
   const lock = readFileSync(new URL("package-lock.json", root), "utf8");
 
   assert.equal(manifest.engines?.node, ">=22.19.0");
-  assert.equal(manifest.peerDependencies?.["@dataforxyz/agent-intercom-core"], "0.1.0");
-  assert.equal(manifest.dependencies?.["@dataforxyz/agent-intercom-core"], undefined);
-  assert.match(manifest.devDependencies?.["@dataforxyz/agent-intercom-core"] ?? "", /^git\+https:\/\//);
+  assert.equal(manifest.peerDependencies?.["@dataforxyz/agent-intercom-core"], undefined);
+  assert.equal(
+    manifest.dependencies?.["@dataforxyz/agent-intercom-core"],
+    "git+https://github.com/dataforxyz/agent-intercom-core.git#8316cbab548f422ad11c78ed887fabeef94817c1",
+  );
+  assert.equal(manifest.devDependencies?.["@dataforxyz/agent-intercom-core"], undefined);
   assert.equal(lock.includes("git+ssh://git@github.com/dataforxyz/agent-intercom-core"), false);
 });
