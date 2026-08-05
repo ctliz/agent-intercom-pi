@@ -14,6 +14,9 @@ export const BOSS_ENV_NAMES = [
 export type BossRole = "manager" | "worker" | "scout" | "adversary";
 export type BossVisibility = "team-only" | "local";
 
+export const ORCHESTRATOR_READINESS_PROBE = "agent-intercom.orchestrator/readiness-probe";
+export const ORCHESTRATOR_READINESS_ACK = "agent-intercom.orchestrator/readiness-ack";
+
 export type BossTeamScope =
   | { present: false; restricted: false }
   | {
@@ -189,6 +192,19 @@ export function resolveBossLiveTarget<T extends BossSession>(
     return { allowed: false, code: "BOSS_TEAM_TARGET_NOT_CONNECTED", error: `Boss target exact session ID "${target}" is not connected` };
   }
   return { allowed: true, targetId: target };
+}
+
+export function isBossControllerReadinessControl(
+  scope: BossTeamScope,
+  direction: "inbound" | "outbound",
+  peerId: string,
+  selfId: string,
+  control: { type: string; version: number } | undefined,
+): boolean {
+  if (!scope.present || !scope.valid || !scope.restricted) return false;
+  if (bossSelfSessionError(scope, selfId)) return false;
+  if (scope.role === "manager" || peerId !== scope.controllerTarget || control?.version !== 1) return false;
+  return control.type === (direction === "inbound" ? ORCHESTRATOR_READINESS_PROBE : ORCHESTRATOR_READINESS_ACK);
 }
 
 /** Authorizes an inbound sender before any inbox or reply state is mutated. */

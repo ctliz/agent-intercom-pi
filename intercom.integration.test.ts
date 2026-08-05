@@ -8,6 +8,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { ReplyTracker } from "./reply-tracker.ts";
 import { PersistentInboundInbox } from "./inbound-inbox.ts";
 import { PersistentOutboundOutbox } from "./outbound-outbox.ts";
+import { ORCHESTRATOR_READINESS_ACK, ORCHESTRATOR_READINESS_PROBE } from "./boss-team-scope.ts";
 import type { Message, SessionInfo } from "./types.ts";
 import {
   INTERCOM_CONTROL_DELIVERY_EVENT,
@@ -1405,6 +1406,7 @@ test("Boss worker scope gates discovery and every model-facing send path by exac
 
       harness = createExtensionHarness("boss-worker", { hasUI: true, mode: "tui", ui, sessionId: workerId });
       piIntercomExtension(harness.pi as never);
+      harness.pi.events.emit(INTERCOM_CONTROL_REGISTER_EVENT, { type: ORCHESTRATOR_READINESS_PROBE, version: 1 });
       assert.equal(harness.tools.some((tool) => tool.name === "intercom_list"), false);
       assert.ok(harness.tools.some((tool) => tool.name === "intercom"), "legacy tool remains available when configured");
 
@@ -1495,6 +1497,49 @@ test("Boss worker scope gates discovery and every model-facing send path by exac
       assert.match(statusAfterDenials.content[0]?.text ?? "", /Queued outbound messages: 0/);
 
       const workerSession = await waitForSessionByName(orchestrator, "boss-worker");
+      const readinessProbeReceived = new Promise<IntercomControlReceivedEvent>((resolve) => {
+        const unsubscribe = harness!.pi.events.on(INTERCOM_CONTROL_RECEIVED_EVENT, (payload) => {
+          const event = payload as IntercomControlReceivedEvent;
+          if (event.control.type !== ORCHESTRATOR_READINESS_PROBE) return;
+          unsubscribe();
+          resolve(event);
+        });
+      });
+      const readinessProbe = await orchestrator.send(workerSession.id, {
+        messageId: "controller-readiness-probe",
+        text: "hidden readiness probe",
+        control: { type: ORCHESTRATOR_READINESS_PROBE, version: 1, data: { requestId: "probe-1", expectedRunId: "worker-run-1" } },
+      });
+      assert.equal(readinessProbe.delivered, true);
+      const receivedProbe = await readinessProbeReceived;
+      assert.equal(receivedProbe.from.id, controllerId);
+      assert.equal(harness.sentMessages.some((entry) => entry.message.content?.includes("hidden readiness probe")), false);
+
+      const readinessAckReceived = new Promise<Message>((resolve) => {
+        const handler = (_from: SessionInfo, message: Message) => {
+          if (message.content.control?.type !== ORCHESTRATOR_READINESS_ACK) return;
+          orchestrator.off("message", handler);
+          resolve(message);
+        };
+        orchestrator.on("message", handler);
+      });
+      const readinessAckDelivery = new Promise<IntercomControlDeliveryEvent>((resolve) => {
+        const unsubscribe = harness!.pi.events.on(INTERCOM_CONTROL_DELIVERY_EVENT, (payload) => {
+          const event = payload as IntercomControlDeliveryEvent;
+          if (event.requestId !== "controller-readiness-ack") return;
+          unsubscribe();
+          resolve(event);
+        });
+      });
+      harness.pi.events.emit(INTERCOM_CONTROL_SEND_EVENT, {
+        requestId: "controller-readiness-ack",
+        to: controllerId,
+        messageId: "controller-readiness-ack-message",
+        control: { type: ORCHESTRATOR_READINESS_ACK, version: 1, data: { requestId: "probe-1", runId: "worker-run-1" } },
+      });
+      assert.equal((await readinessAckDelivery).delivered, true);
+      assert.equal((await readinessAckReceived).content.control?.type, ORCHESTRATOR_READINESS_ACK);
+
       const managerAsk = await bossManager.send(workerSession.id, { messageId: "manager-allowed-ask", text: "allowed manager ask", expectsReply: true });
       assert.equal(managerAsk.delivered, true);
       await new Promise((resolve) => setTimeout(resolve, 100));
