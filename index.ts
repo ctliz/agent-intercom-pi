@@ -18,7 +18,7 @@ import { ReplyTracker } from "./reply-tracker.ts";
 import { InboundMessageConflictError, PersistentInboundInbox, type StoredInboundMessage } from "./inbound-inbox.ts";
 import { PersistentOutboundOutbox } from "./outbound-outbox.ts";
 import { formatIntercomTeam, resolveBossIntercomTeam, resolveIntercomTeam } from "./team.ts";
-import { authorizeBossSender, BossTeamScopeError, bossSelfSessionError, filterBossSessions, readBossTeamScope, resolveBossLiveTarget } from "./boss-team-scope.ts";
+import { authorizeBossSender, BossTeamScopeError, bossSelfSessionError, filterBossSessions, isBossControllerReadinessControl, readBossTeamScope, resolveBossLiveTarget } from "./boss-team-scope.ts";
 import {
   INTERCOM_CONTROL_DELIVERY_EVENT,
   INTERCOM_CONTROL_RECEIVED_EVENT,
@@ -999,7 +999,14 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       return;
     }
     const inboundAuthorization = authorizeBossSender(bossTeamScope, from.id, receivingClient.sessionId);
-    if ("code" in inboundAuthorization) {
+    const controllerReadinessProbe = isBossControllerReadinessControl(
+      bossTeamScope,
+      "inbound",
+      from.id,
+      receivingClient.sessionId,
+      message.content.control,
+    );
+    if ("code" in inboundAuthorization && !controllerReadinessProbe) {
       receivingClient.rejectMessage(deliveryId, `${inboundAuthorization.code}: ${inboundAuthorization.error}`);
       pi.appendEntry("intercom_inbox_policy_denied", {
         from: from.id,
@@ -1376,7 +1383,13 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       let target: string;
       try {
         activeClient = await ensureConnected("background");
-        target = await resolveAuthorizedTarget(activeClient, parsed.to);
+        if (isBossControllerReadinessControl(bossTeamScope, "outbound", parsed.to, activeClient.sessionId, parsed.control)) {
+          const exactController = (await activeClient.listSessions()).find((session) => session.id === parsed.to);
+          if (!exactController) throw new BossTeamScopeError("BOSS_TEAM_TARGET_NOT_CONNECTED", `Boss Controller exact session ID "${parsed.to}" is not connected`);
+          target = exactController.id;
+        } else {
+          target = await resolveAuthorizedTarget(activeClient, parsed.to);
+        }
         if (currentSessionTargetMatches(parsed.to, target, activeClient)) {
           throw new Error("Intercom controls cannot target the current session");
         }

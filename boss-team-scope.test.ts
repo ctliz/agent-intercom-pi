@@ -5,6 +5,9 @@ import {
   bossAllowedTargets,
   bossSelfSessionError,
   filterBossSessions,
+  isBossControllerReadinessControl,
+  ORCHESTRATOR_READINESS_ACK,
+  ORCHESTRATOR_READINESS_PROBE,
   readBossTeamScope,
   resolveBossLiveTarget,
 } from "./boss-team-scope.ts";
@@ -52,6 +55,20 @@ test("Boss role policy grants Controller access only to Manager", () => {
   }
   const manager = readBossTeamScope(metadata({ AGENT_INTERCOM_BOSS_ROLE: "manager" }));
   assert.equal(bossAllowedTargets(manager)!.has("controller-stable-session-id"), true);
+});
+
+test("Boss lower roles permit only the exact hidden Controller readiness handshake", () => {
+  for (const role of ["worker", "scout", "adversary"] as const) {
+    const scope = readBossTeamScope(metadata({ AGENT_INTERCOM_BOSS_ROLE: role }));
+    assert.equal(isBossControllerReadinessControl(scope, "inbound", "controller-stable-session-id", targets[role], { type: ORCHESTRATOR_READINESS_PROBE, version: 1 }), true);
+    assert.equal(isBossControllerReadinessControl(scope, "outbound", "controller-stable-session-id", targets[role], { type: ORCHESTRATOR_READINESS_ACK, version: 1 }), true);
+    assert.equal(isBossControllerReadinessControl(scope, "inbound", "controller-stable-session-id", targets[role], { type: "reload-runtime.request", version: 1 }), false);
+    assert.equal(isBossControllerReadinessControl(scope, "outbound", "controller-stable-session-id", targets[role], { type: ORCHESTRATOR_READINESS_PROBE, version: 1 }), false);
+    assert.equal(isBossControllerReadinessControl(scope, "inbound", "wrong-controller", targets[role], { type: ORCHESTRATOR_READINESS_PROBE, version: 1 }), false);
+    assert.equal(isBossControllerReadinessControl(scope, "inbound", "controller-stable-session-id", "wrong-self", { type: ORCHESTRATOR_READINESS_PROBE, version: 1 }), false);
+  }
+  const manager = readBossTeamScope(metadata({ AGENT_INTERCOM_BOSS_ROLE: "manager" }));
+  assert.equal(isBossControllerReadinessControl(manager, "inbound", "controller-stable-session-id", targets.manager, { type: ORCHESTRATOR_READINESS_PROBE, version: 1 }), false);
 });
 
 test("Boss target resolution accepts exact stable IDs and rejects names and prefixes", () => {
