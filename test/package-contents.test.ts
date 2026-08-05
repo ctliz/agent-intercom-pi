@@ -46,5 +46,12 @@ test("packed runtime installs the exact Core build without an SSH dependency", (
     "git+https://github.com/dataforxyz/agent-intercom-core.git#8316cbab548f422ad11c78ed887fabeef94817c1",
   );
   assert.equal(manifest.devDependencies?.["@dataforxyz/agent-intercom-core"], undefined);
+
+  for (const name of ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "typebox"]) {
+    assert.notEqual(manifest.dependencies?.[name], undefined);
+    assert.equal(manifest.peerDependencies?.[name], undefined);
+    assert.equal(manifest.devDependencies?.[name], undefined);
+  }
+
   assert.equal(lock.includes("git+ssh://git@github.com/dataforxyz/agent-intercom-core"), false);
 });
