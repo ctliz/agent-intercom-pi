@@ -382,6 +382,7 @@ function createExtensionHarness(sessionName: string | (() => string) = "child-wo
   mode?: "tui" | "rpc" | "json" | "print";
   ui?: unknown;
   sessionId?: string | (() => string);
+  sessionEntries?: Array<{ type?: string }>;
 } = {}) {
   const defaultSessionId = `session-child-test-${++harnessSessionSequence}`;
   const events = new EventEmitter();
@@ -421,7 +422,10 @@ function createExtensionHarness(sessionName: string | (() => string) = "child-wo
     cwd: repoDir,
     mode: options.mode ?? (options.hasUI ? "tui" : "print"),
     model: { id: "child-model" },
-    sessionManager: { getSessionId: () => typeof options.sessionId === "function" ? options.sessionId() : options.sessionId ?? defaultSessionId },
+    sessionManager: {
+      getSessionId: () => typeof options.sessionId === "function" ? options.sessionId() : options.sessionId ?? defaultSessionId,
+      ...(options.sessionEntries ? { getEntries: () => options.sessionEntries } : {}),
+    },
     isIdle: options.isIdle ?? (() => true),
     hasUI: options.hasUI ?? false,
     abort: options.abort ?? (() => undefined),
@@ -2079,6 +2083,30 @@ test("idle name poll propagates /name changes without other activity", { concurr
       sessionName = "idle-name-after";
       await waitForSessionByName(planner, "idle-name-after");
     });
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
+    await cleanup();
+  }
+});
+
+test("empty RPC provider probes defer broker registration until the first real turn", { concurrency: false }, async () => {
+  const { planner, cleanup } = await setupClients();
+  const harness = createExtensionHarness("rpc-provider-probe", {
+    mode: "rpc",
+    sessionId: "session-rpc-provider-probe",
+    sessionEntries: [],
+  });
+
+  try {
+    const { default: piIntercomExtension } = await import("./index.ts");
+    piIntercomExtension(harness.pi as never);
+    await harness.emitLifecycle("session_start");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal((await planner.listSessions()).some((session) => session.id === "session-rpc-provider-probe"), false);
+
+    await harness.emitLifecycle("before_agent_start", { systemPrompt: "test" });
+    const registered = await waitForSessionId(planner, "session-rpc-provider-probe");
+    assert.equal(registered.name, "rpc-provider-probe");
   } finally {
     await harness.emitLifecycle("session_shutdown");
     await cleanup();

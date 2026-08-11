@@ -50,6 +50,19 @@ const SUBAGENT_CHILD_AGENT_ENV = "PI_SUBAGENT_CHILD_AGENT";
 const SUBAGENT_CHILD_INDEX_ENV = "PI_SUBAGENT_CHILD_INDEX";
 const SUBAGENT_INTERCOM_SESSION_NAME_ENV = "PI_SUBAGENT_INTERCOM_SESSION_NAME";
 
+export function isEmptyRpcBootstrapSession(ctx: ExtensionContext): boolean {
+  if (ctx.mode !== "rpc") return false;
+  const sessionManager = ctx.sessionManager as typeof ctx.sessionManager & {
+    getEntries?: () => Array<{ type?: string }>;
+  };
+  if (typeof sessionManager.getEntries !== "function") return false;
+  try {
+    return !sessionManager.getEntries().some((entry) => entry.type === "message");
+  } catch {
+    return false;
+  }
+}
+
 interface ChildOrchestratorMetadata {
   orchestratorTarget: string;
   orchestratorSessionId?: string;
@@ -1559,7 +1572,14 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     });
   });
   pi.on("session_start", (_event, ctx) => {
-    if (!config.enabled) {
+    if (!config.enabled || isEmptyRpcBootstrapSession(ctx)) {
+      return;
+    }
+    startSessionRuntime(ctx);
+  });
+
+  pi.on("before_agent_start", (_event, ctx) => {
+    if (!config.enabled || getLiveContext(ctx)) {
       return;
     }
     startSessionRuntime(ctx);
