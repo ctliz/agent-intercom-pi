@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.1-tmuxdeck.1 - 2026-08-13
+
+Maintenance fork based on upstream `v0.10.0`.
+
+- Default discovery, status counts, picker views, and name/ID-prefix routing to the canonical current workspace, with explicit machine scope and exact full-ID cross-workspace contact.
+- Fail closed when a scoped target cannot be resolved instead of forwarding raw selectors to the machine-global broker.
+- Keep reply-batch context for one agent run, resolve ordinary same-sender batches to the latest context, retain context after failed attempts, and clear ordinary context after successful reply.
+
 ## 0.10.0 - 2026-07-16
 
 - Add the no-argument `intercom_team` tool for manager and same-manager coworker discovery with adoption-safe dynamic ownership lookup.

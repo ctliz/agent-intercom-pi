@@ -87,14 +87,19 @@ intercom_team({})
 
 Use the returned manager target directly with `intercom_send` or `intercom_ask`. The manager follows adoption dynamically.
 
-### Pattern 4: Global Status Check
+### Pattern 4: Current Workspace and Machine Discovery
 
-Use the global list only when you need independently launched peers:
+Discovery defaults to the current workspace: the canonical Git root, or canonical cwd outside Git.
 
 ```typescript
 intercom_list({})
-// → Shows all connected sessions with names, cwd, models, and live status (`idle`, `thinking`, `tool:<name>`)
+// → Sessions in the current workspace
+
+intercom_list({ scope: "machine" })
+// → Every connected session on this machine
 ```
+
+Name and ID-prefix routing follows the selected scope and fails closed. Exact full session IDs are the explicit cross-workspace contact path. Client-side workspace filtering is not a broker security boundary.
 
 ### Pattern 5: Reply Naturally
 
@@ -111,9 +116,9 @@ intercom_pending({})
 intercom_reply({ to: "planner", message: "Use exponential backoff starting at 100ms." })
 ```
 
-`intercom_reply` preserves exact threading internally; models never see or construct the protocol message ID.
+`intercom_reply` preserves exact threading internally; models never see or construct the protocol message ID. An ordinary-message batch from one sender resolves to that sender's latest message. Multiple senders require an exact sender name or full session ID. Failed selectors and failed deliveries retain the active context, so retry in the same agent run. A successful reply clears that sender's ordinary context; `agent_end` clears any remaining active ordinary context. New batches received during the run stay queued for the next run.
 
-### Pattern 5: Broadcast to Multiple Workers
+### Pattern 6: Broadcast to Multiple Workers
 
 Send to multiple sessions in parallel:
 
@@ -127,7 +132,7 @@ workers.forEach(w =>
 );
 ```
 
-### Pattern 6: Send with Attachments
+### Pattern 7: Send with Attachments
 
 Share code snippets, files, or context:
 
@@ -147,7 +152,7 @@ intercom_send({
 })
 ```
 
-### Pattern 7: Handle Subagent Escalations (Orchestrator Side)
+### Pattern 8: Handle Subagent Escalations (Orchestrator Side)
 
 When `pi-subagents` spawns a delegated child and supplies child bridge metadata,
 that child can reach you through `contact_supervisor`. You receive a formatted

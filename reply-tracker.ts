@@ -20,6 +20,10 @@ function contextKey(fromSessionId: string, messageId: string): string {
   return `${fromSessionId}\u0000${messageId}`;
 }
 
+function oneSender(contexts: IntercomContext[]): boolean {
+  return contexts.length > 0 && contexts.every((context) => context.from.id === contexts[0]!.from.id);
+}
+
 export class ReplyTracker {
   private readonly pendingAsks = new Map<string, IntercomContext>();
   private readonly pendingTurnContexts: IntercomContext[][] = [];
@@ -54,7 +58,9 @@ export class ReplyTracker {
 
   beginTurn(now = Date.now()): void {
     this.pruneExpired(now);
-    this.currentTurnContexts = this.pendingTurnContexts.shift() ?? [];
+    if (this.currentTurnContexts.length === 0) {
+      this.currentTurnContexts = this.pendingTurnContexts.shift() ?? [];
+    }
   }
 
   endTurn(): void {
@@ -100,7 +106,8 @@ export class ReplyTracker {
         return turnMatches[0]!;
       }
       if (turnMatches.length > 1) {
-        throw new Error("Multiple messages are active in this intercom batch — specify `to` to select the sender");
+        if (oneSender(turnMatches)) return turnMatches[turnMatches.length - 1]!;
+        throw new Error("Multiple senders are active in this intercom batch — specify `to` using an exact sender name or full session ID");
       }
     }
 
@@ -131,6 +138,12 @@ export class ReplyTracker {
 
   markReplied(replyTo: string, fromSessionId?: string): void {
     this.dismissPendingAsk(replyTo, fromSessionId);
+  }
+
+  dismissOrdinarySender(fromSessionId: string): void {
+    this.currentTurnContexts = this.currentTurnContexts.filter((context) =>
+      context.message.expectsReply || context.from.id !== fromSessionId
+    );
   }
 
   markDeferred(replyTo: string, fromSessionIdOrDeferredAt?: string | number, deferredAt = Date.now()): boolean {

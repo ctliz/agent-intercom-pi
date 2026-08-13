@@ -62,7 +62,7 @@ test("multiple asks in one batch require explicit replyTo unless sender disambig
   assert.equal(tracker.resolveReplyTarget({ replyTo: "ask-1" }, 1003).from.id, "planner-id");
 });
 
-test("multiple ordinary messages in one batch do not choose an arbitrary reply target", () => {
+test("multiple ordinary messages from one sender resolve to that sender's latest context", () => {
   const tracker = new ReplyTracker();
   const from = createSession("planner-id", "planner");
   const first = tracker.recordIncomingMessage(from, createMessage("note-1", "First", false), 1000);
@@ -70,7 +70,66 @@ test("multiple ordinary messages in one batch do not choose an arbitrary reply t
   tracker.queueTurnContexts([first, second]);
   tracker.beginTurn(1002);
 
-  assert.throws(() => tracker.resolveReplyTarget({}, 1003), /Multiple messages are active/);
+  assert.equal(tracker.resolveReplyTarget({}, 1003).message.id, "note-2");
+  assert.equal(tracker.resolveReplyTarget({ to: "planner" }, 1003).message.id, "note-2");
+  assert.equal(tracker.resolveReplyTarget({ to: "planner-id" }, 1003).message.id, "note-2");
+});
+
+test("multiple ordinary senders require an exact sender name or full session ID", () => {
+  const tracker = new ReplyTracker();
+  const planner = tracker.recordIncomingMessage(createSession("planner-id", "planner"), createMessage("note-1", "First", false), 1000);
+  const reviewer = tracker.recordIncomingMessage(createSession("reviewer-id", "reviewer"), createMessage("note-2", "Second", false), 1001);
+  tracker.queueTurnContexts([planner, reviewer]);
+  tracker.beginTurn(1002);
+
+  assert.throws(() => tracker.resolveReplyTarget({}, 1003), /Multiple senders are active/);
+  assert.equal(tracker.resolveReplyTarget({ to: "reviewer" }, 1003).message.id, "note-2");
+  assert.equal(tracker.resolveReplyTarget({ to: "planner-id" }, 1003).message.id, "note-1");
+  assert.throws(() => tracker.resolveReplyTarget({ to: "review" }, 1003), /No active intercom context/);
+});
+
+test("ordinary reply context survives provider loops, failed attempts, and clears after success", () => {
+  const tracker = new ReplyTracker();
+  const from = createSession("planner-id", "planner");
+  const first = tracker.recordIncomingMessage(from, createMessage("note-1", "First", false), 1000);
+  const second = tracker.recordIncomingMessage(from, createMessage("note-2", "Second", false), 1001);
+  tracker.queueTurnContexts([first, second]);
+  tracker.beginTurn(1002);
+  tracker.beginTurn(1003);
+
+  assert.equal(tracker.resolveReplyTarget({ to: "planner" }, 1004).message.id, "note-2");
+  assert.throws(() => tracker.resolveReplyTarget({ to: "other" }, 1005), /No active intercom context/);
+  assert.equal(tracker.resolveReplyTarget({ to: "planner-id" }, 1006).message.id, "note-2");
+
+  tracker.dismissOrdinarySender("planner-id");
+  assert.throws(() => tracker.resolveReplyTarget({}, 1007), /No active intercom context/);
+});
+
+test("agent-run cleanup removes ordinary context and the next run cannot reply", () => {
+  const tracker = new ReplyTracker();
+  const context = tracker.recordIncomingMessage(createSession("planner-id", "planner"), createMessage("note-1", "Update", false), 1000);
+  tracker.queueTurnContext(context);
+  tracker.beginTurn(1001);
+  assert.equal(tracker.resolveReplyTarget({}, 1002).message.id, "note-1");
+
+  tracker.endTurn();
+  tracker.beginTurn(1003);
+  assert.throws(() => tracker.resolveReplyTarget({}, 1004), /No active intercom context/);
+});
+
+test("a new pending batch waits until the active agent run ends", () => {
+  const tracker = new ReplyTracker();
+  const first = tracker.recordIncomingMessage(createSession("planner-id", "planner"), createMessage("note-1", "First", false), 1000);
+  const second = tracker.recordIncomingMessage(createSession("reviewer-id", "reviewer"), createMessage("note-2", "Second", false), 1001);
+  tracker.queueTurnContext(first);
+  tracker.beginTurn(1002);
+  tracker.queueTurnContext(second);
+  tracker.beginTurn(1003);
+  assert.equal(tracker.resolveReplyTarget({}, 1004).message.id, "note-1");
+
+  tracker.endTurn();
+  tracker.beginTurn(1005);
+  assert.equal(tracker.resolveReplyTarget({}, 1006).message.id, "note-2");
 });
 
 test("reply resolves from single pending ask without current turn context", () => {

@@ -1,6 +1,6 @@
 {
   "name": "@dataforxyz/agent-intercom-pi",
-  "version": "0.10.0",
+  "version": "0.10.1-tmuxdeck.1",
   "license": "AGPL-3.0-or-later",
   "type": "module",
   "main": "index.ts",
@@ -16,7 +16,8 @@
     "THIRD_PARTY_NOTICES.md",
     "licenses/**/*",
     "COPYRIGHT",
-    "LICENSE_TRANSITION.md"
+    "LICENSE_TRANSITION.md",
+    "RELEASE-NOTES-v0.10.1-tmuxdeck.1.md"
   ],
   "scripts": {
     "test": "tsx --test broker/*.test.ts *.test.ts test/*.test.ts",

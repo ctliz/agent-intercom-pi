@@ -13,6 +13,7 @@ import { sanitizeDisplayText, shortestUniqueIdPrefixes } from "./ui/session-iden
 import { getAskTimeoutMs, getAskWaitMs, loadConfig, type IntercomConfig } from "./config.ts";
 import type { SessionInfo, Message, Attachment } from "./types.ts";
 import { ReplyTracker } from "./reply-tracker.ts";
+import { sameWorkspace } from "./cwd.ts";
 import { InboundMessageConflictError, PersistentInboundInbox, type StoredInboundMessage } from "./inbound-inbox.ts";
 import { formatIntercomTeam, resolveIntercomTeam } from "./team.ts";
 
@@ -31,6 +32,8 @@ const SUBAGENT_RUN_ID_ENV = "PI_SUBAGENT_RUN_ID";
 const SUBAGENT_CHILD_AGENT_ENV = "PI_SUBAGENT_CHILD_AGENT";
 const SUBAGENT_CHILD_INDEX_ENV = "PI_SUBAGENT_CHILD_INDEX";
 const SUBAGENT_INTERCOM_SESSION_NAME_ENV = "PI_SUBAGENT_INTERCOM_SESSION_NAME";
+const WORKSPACE_TARGET_NOT_FOUND = "Target not found in the current workspace. Use the full session ID for cross-workspace contact, or list with scope=machine.";
+type DiscoveryScope = "workspace" | "machine";
 
 interface ChildOrchestratorMetadata {
   orchestratorTarget: string;
@@ -460,12 +463,15 @@ function formatSessionLabel(session: SessionInfo, duplicates: Set<string>, idPre
     ? `${name} (${sanitizeDisplayText(idPrefix, session.id)})`
     : name;
 }
+function sessionsInScope(sessions: SessionInfo[], current: SessionInfo, scope: DiscoveryScope): SessionInfo[] {
+  return scope === "machine" ? sessions : sessions.filter((session) => sameWorkspace(session.cwd, current.cwd));
+}
 function formatSessionListRow(session: SessionInfo, currentCwd: string, isSelf: boolean, idPrefix: string): string {
   const name = sanitizeDisplayText(session.name, "Unnamed session");
   const cwd = sanitizeDisplayText(session.cwd, "Unknown path");
   const model = sanitizeDisplayText(session.model, "Unknown model");
   const status = sanitizeDisplayText(session.status);
-  const tags = [isSelf ? "self" : session.cwd === currentCwd ? "same cwd" : undefined, status || undefined]
+  const tags = [isSelf ? "self" : sameWorkspace(session.cwd, currentCwd) ? "same workspace" : undefined, status || undefined]
     .filter((tag): tag is string => Boolean(tag));
   const suffix = tags.length ? ` [${tags.join(", ")}]` : "";
   return `• ${name} (${sanitizeDisplayText(idPrefix, session.id)}) — ${cwd} (${model})${suffix}`;
@@ -1061,14 +1067,15 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     reconnectPromiseGeneration = generationAtStart;
     return nextReconnectPromise;
   }
-  async function resolveSessionTarget(activeClient: IntercomClient, nameOrId: string): Promise<string | null> {
+  async function resolveSessionTarget(activeClient: IntercomClient, nameOrId: string, scope: DiscoveryScope = "workspace"): Promise<string | null> {
     const sessions = await activeClient.listSessions();
     const byId = sessions.find(s => s.id === nameOrId);
-    if (byId) {
-      return byId.id;
-    }
+    if (byId) return byId.id;
+    const current = sessions.find(s => s.id === activeClient.sessionId);
+    if (!current) throw new Error("Current session is missing from intercom session list.");
+    const candidates = sessionsInScope(sessions, current, scope);
     const lowerName = nameOrId.toLowerCase();
-    const byName = sessions.filter(s => s.name?.toLowerCase() === lowerName);
+    const byName = candidates.filter(s => s.name?.toLowerCase() === lowerName);
     if (byName.length > 1) {
       throw new Error(`Multiple sessions named "${nameOrId}" are connected. Use the session ID instead.`);
     }
@@ -1076,7 +1083,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       return byName[0]!.id;
     }
 
-    const byIdPrefix = sessions.filter(s => s.id.startsWith(nameOrId));
+    const byIdPrefix = candidates.filter(s => s.id.startsWith(nameOrId));
     if (byIdPrefix.length === 1) {
       return byIdPrefix[0]!.id;
     }
@@ -1085,14 +1092,12 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }
     return null;
   }
-  async function resolveSupervisorTarget(activeClient: IntercomClient, metadata: ChildOrchestratorMetadata): Promise<string> {
+  async function resolveSupervisorTarget(activeClient: IntercomClient, metadata: ChildOrchestratorMetadata): Promise<string | null> {
     if (metadata.orchestratorSessionId) {
-      const bySessionId = await resolveSessionTarget(activeClient, metadata.orchestratorSessionId);
-      if (bySessionId) {
-        return bySessionId;
-      }
+      const sessions = await activeClient.listSessions();
+      if (sessions.some((session) => session.id === metadata.orchestratorSessionId)) return metadata.orchestratorSessionId;
     }
-    return await resolveSessionTarget(activeClient, metadata.orchestratorTarget) ?? metadata.orchestratorTarget;
+    return resolveSessionTarget(activeClient, metadata.orchestratorTarget);
   }
   function deliverLocalSubagentRelayMessage(sender: "subagent-control" | "subagent-result", status: string, messageText: string): void {
     const liveContext = getLiveContext();
@@ -1210,7 +1215,12 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       let target: string;
       try {
         activeClient = await ensureConnected("background");
-        target = await resolveSessionTarget(activeClient, parsed.to) ?? parsed.to;
+        const childMetadata = readChildOrchestratorMetadata();
+        const resolved = childMetadata && (parsed.to === childMetadata.orchestratorTarget || parsed.to === childMetadata.orchestratorSessionId)
+          ? await resolveSupervisorTarget(activeClient, childMetadata)
+          : await resolveSessionTarget(activeClient, parsed.to);
+        if (!resolved) throw new Error(WORKSPACE_TARGET_NOT_FOUND);
+        target = resolved;
       } catch (error) {
         if (!relayStillLive()) return;
         recordSubagentDeliveryError(options.errorEntryType, parsed.to, parsed.message, error);
@@ -1293,10 +1303,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     sessionStartedAt = null;
   });
   pi.on("turn_end", () => {
-    if (!getLiveContext()) {
-      return;
-    }
-    replyTracker.endTurn();
+    if (!getLiveContext()) return;
     scheduleInboundFlush(0);
   });
   pi.on("agent_start", () => {
@@ -1322,9 +1329,8 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     syncPresenceStatus();
   });
   pi.on("agent_end", () => {
-    if (!getLiveContext()) {
-      return;
-    }
+    if (!getLiveContext()) return;
+    replyTracker.endTurn();
     agentRunning = false;
     activeTools.clear();
     syncPresenceStatus();
@@ -1476,12 +1482,18 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         }
 
         const metadata = childOrchestratorMetadata;
-        let sendTo: string;
+        let sendTo: string | null;
         try {
           sendTo = await resolveSupervisorTarget(connectedClient, metadata);
         } catch (error) {
           return {
             content: [{ type: "text", text: `Failed to resolve supervisor target: ${getErrorMessage(error)}` }],
+            details: { error: true },
+          };
+        }
+        if (!sendTo) {
+          return {
+            content: [{ type: "text", text: `Supervisor "${metadata.orchestratorTarget}" is not connected in the current workspace. Use an exact supervisor session ID for cross-workspace contact.` }],
             details: { error: true },
           };
         }
@@ -1670,7 +1682,8 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
 Use this to communicate findings, request help, or coordinate work with other sessions.
 
 Usage:
-  intercom({ action: "list" })                    → List active sessions
+  intercom({ action: "list" })                    → List sessions in the current workspace
+  intercom({ action: "list", scope: "machine" }) → List all active sessions on this machine
   intercom({ action: "send", to: "session-name", message: "..." })  → Send message
   intercom({ action: "ask", to: "session-name", message: "..." })   → Ask, waiting up to 30 seconds before continuing asynchronously
   intercom({ action: "reply", message: "..." })                      → Reply to the active/single pending ask
@@ -1698,6 +1711,9 @@ Usage:
       replyTo: Type.Optional(Type.String({
         description: "Message ID to reply to (for threading or responding to an 'ask')",
       })),
+      scope: Type.Optional(StringEnum(["workspace", "machine"] as const, {
+        description: "Discovery scope for list/status and name or ID-prefix routing. Defaults to the current workspace. Exact full session IDs always work across workspaces.",
+      })),
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -1713,7 +1729,7 @@ Usage:
 
       syncPresenceIdentity(ctx.sessionManager.getSessionId());
 
-      const { action, to, message, attachments, replyTo } = params;
+      const { action, to, message, attachments, replyTo, scope = "workspace" } = params;
 
       switch (action) {
         case "list": {
@@ -1721,7 +1737,6 @@ Usage:
             const mySessionId = connectedClient.sessionId;
             const sessions = await connectedClient.listSessions();
             const currentSession = sessions.find(s => s.id === mySessionId);
-            const otherSessions = sessions.filter(s => s.id !== mySessionId);
             const idPrefixes = shortestUniqueIdPrefixes(sessions.map((session) => session.id), 8);
 
             if (!currentSession) {
@@ -1731,10 +1746,13 @@ Usage:
               };
             }
 
+            const otherSessions = sessionsInScope(sessions, currentSession, scope).filter(s => s.id !== mySessionId);
             const currentSection = `**Current session:**\n${formatSessionListRow(currentSession, currentSession.cwd, true, idPrefixes.get(currentSession.id) ?? currentSession.id)}`;
+            const heading = scope === "machine" ? "Other sessions on this machine" : "Other sessions in the current workspace";
+            const empty = scope === "machine" ? "No other sessions connected." : "No other sessions in the current workspace. Use scope=machine to view all connected sessions.";
             const otherSection = otherSessions.length === 0
-              ? "**Other sessions:**\nNo other sessions connected."
-              : `**Other sessions:**\n${otherSessions.map(s => formatSessionListRow(s, currentSession.cwd, false, idPrefixes.get(s.id) ?? s.id)).join("\n")}`;
+              ? `**${heading}:**\n${empty}`
+              : `**${heading}:**\n${otherSessions.map(s => formatSessionListRow(s, currentSession.cwd, false, idPrefixes.get(s.id) ?? s.id)).join("\n")}`;
 
             return {
               content: [{ type: "text", text: `${currentSection}\n\n${otherSection}` }],
@@ -1762,7 +1780,10 @@ Usage:
             };
           }
           try {
-            const sendTo = await resolveSessionTarget(connectedClient, to) ?? to;
+            const sendTo = await resolveSessionTarget(connectedClient, to, scope);
+            if (!sendTo) {
+              return { content: [{ type: "text", text: WORKSPACE_TARGET_NOT_FOUND }], details: { error: true } };
+            }
             if (sendTo === connectedClient.sessionId) {
               return {
                 content: [{ type: "text", text: "Cannot message the current session" }],
@@ -1846,7 +1867,10 @@ Usage:
           let replyPromise: Promise<Message> | null = null;
 
           try {
-            const sendTo = await resolveSessionTarget(connectedClient, to) ?? to;
+            const sendTo = await resolveSessionTarget(connectedClient, to, scope);
+            if (!sendTo) {
+              return { content: [{ type: "text", text: WORKSPACE_TARGET_NOT_FOUND }], details: { error: true } };
+            }
             if (_signal?.aborted) {
               return {
                 content: [{ type: "text", text: "Cancelled" }],
@@ -1966,6 +1990,8 @@ Usage:
             if (threadedReplyTo) {
               replyTracker.markReplied(threadedReplyTo, target.from.id);
               inboundInbox?.dismissPendingAsk(threadedReplyTo, target.from.id);
+            } else {
+              replyTracker.dismissOrdinarySender(target.from.id);
             }
             pi.appendEntry("intercom_sent", {
               to: target.from.name || target.from.id,
@@ -2012,10 +2038,16 @@ Usage:
           try {
             const mySessionId = connectedClient.sessionId;
             const sessions = await connectedClient.listSessions();
+            const currentSession = sessions.find((session) => session.id === mySessionId);
+            if (!currentSession) {
+              return { content: [{ type: "text", text: "Current session is missing from intercom session list." }], details: { error: true } };
+            }
+            const activeCount = sessionsInScope(sessions, currentSession, scope).length;
+            const countLabel = scope === "machine" ? "Active sessions on this machine" : "Active sessions in current workspace";
             return {
               content: [{
                 type: "text",
-                text: `**Intercom Status:**\nConnected: Yes\nSession ID: ${mySessionId}\nActive sessions: ${sessions.length}\nQueued inbound messages: ${inboundInbox?.size ?? 0}\nQueued outbound messages: ${connectedClient.outboxSize}\nPending inbound asks: ${replyTracker.listPending().length}`,
+                text: `**Intercom Status:**\nConnected: Yes\nSession ID: ${mySessionId}\n${countLabel}: ${activeCount}\nQueued inbound messages: ${inboundInbox?.size ?? 0}\nQueued outbound messages: ${connectedClient.outboxSize}\nPending inbound asks: ${replyTracker.listPending().length}`,
               }],
               details: {},
             };
@@ -2096,6 +2128,7 @@ Usage:
       to: Type.String({ description: "Required recipient session name or stable session ID" }),
       message: Type.String({ description: "Required message to send" }),
       attachments: attachmentParameters,
+      scope: Type.Optional(StringEnum(["workspace", "machine"] as const, { description: "Name/prefix discovery scope; exact full IDs always work across workspaces" })),
     }),
     execute: executeSplitAction("send"),
     renderCall: renderSplitCall("send"),
@@ -2112,6 +2145,7 @@ Usage:
       to: Type.String({ description: "Required recipient session name or stable session ID" }),
       message: Type.String({ description: "Required question to ask" }),
       attachments: attachmentParameters,
+      scope: Type.Optional(StringEnum(["workspace", "machine"] as const, { description: "Name/prefix discovery scope; exact full IDs always work across workspaces" })),
     }),
     execute: executeSplitAction("ask"),
     renderCall: renderSplitCall("ask"),
@@ -2163,7 +2197,7 @@ Usage:
   } as any);
 
   for (const definition of [
-    { name: "intercom_list", label: "Intercom List", action: "list", description: "List active local intercom sessions.", promptSnippet: "List active local intercom sessions." },
+    { name: "intercom_list", label: "Intercom List", action: "list", description: "List sessions in the current workspace by default.", promptSnippet: "List sessions in the current workspace." },
     { name: "intercom_pending", label: "Intercom Pending", action: "pending", description: "List unresolved inbound intercom asks.", promptSnippet: "List unresolved inbound intercom asks." },
     { name: "intercom_status", label: "Intercom Status", action: "status", description: "Show this session's intercom connection status.", promptSnippet: "Show intercom connection status." },
   ] as const) {
@@ -2172,7 +2206,9 @@ Usage:
       label: definition.label,
       description: definition.description,
       promptSnippet: definition.promptSnippet,
-      parameters: Type.Object({}),
+      parameters: definition.action === "list" || definition.action === "status"
+        ? Type.Object({ scope: Type.Optional(StringEnum(["workspace", "machine"] as const)) })
+        : Type.Object({}),
       execute: executeSplitAction(definition.action),
       renderCall: renderSplitCall(definition.action),
       renderResult: renderSplitResult,
@@ -2242,7 +2278,7 @@ Usage:
     notifyIfLive(liveContext, `Intercom target: ${contact.target}`, "info", generation);
   }
 
-  async function openIntercomOverlay(ctx: ExtensionContext): Promise<void> {
+  async function openIntercomOverlay(ctx: ExtensionContext, scope: DiscoveryScope = "workspace"): Promise<void> {
     const overlayGeneration = runtimeGeneration;
     const liveContext = getLiveContext(ctx, overlayGeneration);
     if (!liveContext?.hasUI || (liveContext as ExtensionContext & { mode?: string }).mode !== "tui") return;
@@ -2261,6 +2297,7 @@ Usage:
     let currentSession: SessionInfo;
     let sessions: SessionInfo[];
     let duplicates: Set<string>;
+    let idPrefixes: Map<string, string>;
     try {
       const mySessionId = overlayClient.sessionId;
       const allSessions = await overlayClient.listSessions();
@@ -2272,14 +2309,15 @@ Usage:
       }
       currentSession = foundCurrentSession;
       duplicates = duplicateSessionNames(allSessions);
-      sessions = allSessions.filter(s => s.id !== mySessionId);
+      idPrefixes = shortestUniqueIdPrefixes(allSessions.map((session) => session.id), 8);
+      sessions = sessionsInScope(allSessions, currentSession, scope).filter(s => s.id !== mySessionId);
     } catch (error) {
       notifyIfLive(ctx, `Failed to list sessions: ${getErrorMessage(error)}`, "error", overlayGeneration);
       return;
     }
 
     const selectedSession = await ctx.ui.custom<SessionInfo | undefined>(
-      (_tui, theme, keybindings, done) => new SessionListOverlay(theme, keybindings, currentSession, sessions, done),
+      (_tui, theme, keybindings, done) => new SessionListOverlay(theme, keybindings, currentSession, sessions, done, scope === "machine", idPrefixes),
       { overlay: true, overlayOptions: { width: 88 } }
     ).catch(() => undefined);
 
@@ -2293,7 +2331,6 @@ Usage:
     }
     if (!getLiveContext(ctx, overlayGeneration)) return;
 
-    const idPrefixes = shortestUniqueIdPrefixes([currentSession.id, ...sessions.map((session) => session.id)], 8);
     const targetLabel = formatSessionLabel(selectedSession, duplicates, idPrefixes.get(selectedSession.id) ?? selectedSession.id);
 
     const result = await ctx.ui.custom<ComposeResult>(
@@ -2313,8 +2350,8 @@ Usage:
   }
 
   pi.registerCommand("intercom", {
-    description: "Open session intercom overlay",
-    handler: async (_args, ctx) => openIntercomOverlay(ctx),
+    description: "Open the current workspace intercom overlay; use /intercom machine for all sessions",
+    handler: async (args, ctx) => openIntercomOverlay(ctx, args.trim().toLowerCase() === "machine" ? "machine" : "workspace"),
   });
 
   pi.registerCommand("intercom-id", {

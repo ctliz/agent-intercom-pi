@@ -3,6 +3,7 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import type { SessionInfo } from "../types.ts";
 import { sanitizeDisplayText, searchableSessionText, shortestUniqueIdPrefixes } from "./session-identity.ts";
+import { sameWorkspace } from "../cwd.ts";
 
 function middleTruncate(text: string, maxWidth: number): string {
   if (visibleWidth(text) <= maxWidth) {
@@ -33,10 +34,10 @@ function middleTruncate(text: string, maxWidth: number): string {
 function sessionTitle(
   session: SessionInfo,
   idPrefix: string,
-  options?: { self?: boolean; sameCwd?: boolean },
+  options?: { self?: boolean; sameWorkspace?: boolean },
 ): string {
   const name = sanitizeDisplayText(session.name, "Unnamed session");
-  const tags = [options?.self ? "self" : undefined, options?.sameCwd ? "same cwd" : undefined]
+  const tags = [options?.self ? "self" : undefined, options?.sameWorkspace ? "same workspace" : undefined]
     .filter((tag): tag is string => Boolean(tag));
   const suffix = tags.length ? ` [${tags.join(", ")}]` : "";
   return `${name} (${sanitizeDisplayText(idPrefix, "unknown")})${suffix}`;
@@ -59,13 +60,15 @@ export class SessionListOverlay implements Component {
     currentSession: SessionInfo,
     sessions: SessionInfo[],
     done: (result: SessionInfo | undefined) => void,
+    private readonly machineScope = false,
+    idPrefixes?: Map<string, string>,
   ) {
     this.theme = theme;
     this.keybindings = keybindings;
     this.currentSession = currentSession;
     this.sessions = sessions;
     this.done = done;
-    this.idPrefixes = shortestUniqueIdPrefixes([currentSession.id, ...sessions.map(session => session.id)]);
+    this.idPrefixes = idPrefixes ?? shortestUniqueIdPrefixes([currentSession.id, ...sessions.map(session => session.id)]);
   }
 
   private get filteredSessions(): SessionInfo[] {
@@ -156,7 +159,7 @@ export class SessionListOverlay implements Component {
     lines.push(row(`  ${this.theme.fg("dim", `${middleTruncate(currentCwd, Math.max(8, contentWidth - 4))} • ${currentModel}`)}`));
     lines.push(row());
     lines.push(border(`├${"─".repeat(contentWidth)}┤`));
-    lines.push(row(this.theme.bold(" Other Sessions")));
+    lines.push(row(this.theme.bold(this.machineScope ? " Other Sessions on This Machine" : " Other Sessions in Current Workspace")));
     lines.push(row(this.theme.fg("dim", ` Search: ${sanitizeDisplayText(this.query)}█`)));
     lines.push(row());
 
@@ -174,10 +177,10 @@ export class SessionListOverlay implements Component {
       for (let index = startIndex; index < endIndex; index += 1) {
         const session = sessions[index];
         const isSelected = index === this.selectedIndex;
-        const sameCwd = session.cwd === this.currentSession.cwd;
+        const inSameWorkspace = sameWorkspace(session.cwd, this.currentSession.cwd);
         const prefix = isSelected ? this.theme.fg("accent", "→ ") : "  ";
         const idPrefix = this.idPrefixes.get(session.id) ?? session.id;
-        const title = sessionTitle(session, idPrefix, { sameCwd });
+        const title = sessionTitle(session, idPrefix, { sameWorkspace: inSameWorkspace });
         const cwd = sanitizeDisplayText(session.cwd, "Unknown path");
         const model = sanitizeDisplayText(session.model, "Unknown model");
         const pathText = `${middleTruncate(cwd, Math.max(8, contentWidth - 4))} • ${model}`;

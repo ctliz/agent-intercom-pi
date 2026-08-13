@@ -54,6 +54,16 @@ pi install git:github.com/dataforxyz/agent-intercom-pi@v0.9.1
 
 Then restart Pi. The extension auto-connects to the broker on startup and registers the bundled `pi-intercom` skill for common coordination patterns.
 
+### TmuxDeck maintenance fork
+
+This fork release is GitHub-only and is not an official npm release:
+
+```bash
+pi install git:github.com/ctliz/agent-intercom-pi@v0.10.1-tmuxdeck.1
+```
+
+It remains protocol v3. After installing or upgrading, run `/reload` in every open Pi session and restart every companion Codex, Claude, or OpenCode adapter. Older or other adapters still use machine-global discovery, and incompatible broker protocol versions cannot share a broker.
+
 To let Pi create and safely own persistent Pi, Codex, Claude Code, and OpenCode coworkers, install the companion orchestrator Pi plugin too:
 
 ```bash
@@ -374,13 +384,13 @@ The supervisor can reply with plain JSON or a fenced `json` block. If the reply 
 
 | Tool | Parameters | Description |
 |------|------------|-------------|
-| `intercom_send` | required `to`, required `message`, optional `attachments` | Fire-and-forget delivery |
-| `intercom_ask` | required `to`, required `message`, optional `attachments` | Ask and wait briefly for a reply |
+| `intercom_send` | required `to`, required `message`, optional `attachments`, optional `scope` | Fire-and-forget delivery |
+| `intercom_ask` | required `to`, required `message`, optional `attachments`, optional `scope` | Ask and wait briefly for a reply |
 | `intercom_reply` | required `message`, optional `to` | Reply to the active or pending inbound message; `to` selects a sender when multiple asks are pending |
 | `intercom_team` | none | Show the current manager and live coworkers owned by that manager |
-| `intercom_list` | none | List connected sessions globally |
+| `intercom_list` | optional `scope` | List the current workspace by default; use `scope: "machine"` explicitly for every connected session |
 | `intercom_pending` | none | List unresolved inbound asks |
-| `intercom_status` | none | Show connection and queue status |
+| `intercom_status` | optional `scope` | Show connection and queue status; session count defaults to the current workspace |
 
 Exact reply threading is internal. No split tool exposes `replyTo`, `reply_to`, or any message/thread-ID parameter.
 
@@ -404,17 +414,19 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 
 **`intercom_team`** reads orchestrator ownership dynamically and returns the current manager plus live same-manager coworkers. After adoption it follows the new manager without restarting the worker; `AGENT_INTERCOM_MANAGER_TARGET` is only a startup fallback.
 
-**`intercom_list`** returns the current session plus other active intercom-connected sessions with name, short ID, working directory, model, and live status. It is global, so orchestrator-owned workers should prefer `intercom_team` for their group.
+**`intercom_list`** returns the current session plus other active intercom-connected sessions with name, short ID, working directory, model, and live status. By default it shows only the current workspace, defined as the canonical Git root or canonical cwd outside Git. Pass `{ scope: "machine" }` to view every connected session. Short IDs remain machine-unique.
 
-**`intercom_send`** sends immediately and distinguishes broker `accepted` from receiver-acknowledged `delivered`. Set `confirmSend: true` for an interactive confirmation dialog.
+**`intercom_send`** sends immediately and distinguishes broker `accepted` from receiver-acknowledged `delivered`. Name and ID-prefix lookup defaults to the current workspace and fails closed; unresolved selectors are never forwarded to the broker. Exact full session IDs remain the explicit cross-workspace escape hatch. Pass `scope: "machine"` for intentional machine-wide name/prefix lookup. Set `confirmSend: true` for an interactive confirmation dialog.
 
-**`intercom_ask`** waits up to 30 seconds for a prompt reply, then returns a successful pending result while keeping the request open for a late reply. `PI_INTERCOM_ASK_WAIT_MS` changes the blocking window.
+**`intercom_ask`** uses the same scoped target rules as `intercom_send`. It waits up to 30 seconds for a prompt reply, then returns a successful pending result while keeping the request open for a late reply. `PI_INTERCOM_ASK_WAIT_MS` changes the blocking window.
 
-**`intercom_reply`** resolves the active or pending inbound context internally. Pass optional `to` only to select a sender when multiple asks are pending; it is never a thread or message ID. If multiple unresolved asks from the same sender remain after their original turns, sender-only disambiguation is intentionally unavailable; answer them while their inbound turn context is active or ask the sender to resend the specific question.
+**`intercom_reply`** resolves the active or pending inbound context internally. Ask contexts take priority. For an ordinary batch from one sender, an implicit or exact-sender reply targets that sender's latest message. Multiple senders require an exact sender name or full session ID. Failed selectors and failed deliveries retain context for the rest of the agent run; a successful ordinary reply clears that sender's ordinary batch context. If another inbound batch arrives while a run is active, it stays queued for the next run. `agent_end` clears the active ordinary context, so a later run cannot reply to it accidentally. `to` is never a thread or message ID.
 
 **`intercom_pending`** lists unresolved inbound asks with sender, elapsed time, and a preview.
 
-**`intercom_status`** shows connection, session, queue, and pending-ask status.
+**`intercom_status`** shows connection, session, queue, and pending-ask status. Its active-session count defaults to the current workspace; pass `scope: "machine"` for the machine count.
+
+Workspace filtering is client-side discovery and fail-closed routing, not a broker security boundary. The protocol-v3 broker remains machine-global for the same OS user.
 
 The deprecated monolithic `intercom({ action: ... })` tool is hidden by default. Enable `legacyTool` only for temporary compatibility.
 
@@ -422,7 +434,7 @@ The deprecated monolithic `intercom({ action: ... })` tool is hidden by default.
 
 | Key | Action |
 |-----|--------|
-| Alt+M | Open session list overlay |
+| Alt+M | Open the current-workspace session list overlay (`/intercom machine` opens machine scope) |
 | Alt+I | Copy this session's intercom contact target, falling back to editor insert |
 | ↑/↓ | Navigate session list |
 | Enter | Select session / Send message |
