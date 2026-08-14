@@ -6,8 +6,8 @@ import {
   BOSS_POLICY_SEMANTICS_HASH,
   BOSS_RUN_FEATURE_CONTRACT,
   type BossParticipantRole,
-} from "@dataforxyz/agent-intercom-core/boss";
-import { BOSS_POLICY_PRINCIPAL_VERSION } from "@dataforxyz/agent-intercom-core/boss/policy";
+} from "@ctliz/agent-intercom-core/boss";
+import { BOSS_POLICY_PRINCIPAL_VERSION } from "@ctliz/agent-intercom-core/boss/policy";
 import type { SessionInfo } from "../types.ts";
 import { authorizeSessionAction, visibleSessions } from "./authorization.ts";
 import { parseBossSessionMetadata } from "./boss-adapter.ts";

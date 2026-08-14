@@ -6,7 +6,7 @@ import {
   BOSS_PARTICIPANT_CREDENTIAL_VERSION,
   BOSS_RUN_FEATURE,
   BOSS_RUN_FEATURE_CONTRACT,
-} from "@dataforxyz/agent-intercom-core/boss";
+} from "@ctliz/agent-intercom-core/boss";
 import { IntercomClient } from "./client.ts";
 import { brokerCapabilityAdvertisement } from "./boss-adapter.ts";
 

@@ -12,7 +12,7 @@ const supportedBossFeature = Object.freeze({
 export const PI_BOSS_PROTECTED_PROVIDER_BUILD_IDENTITY = Object.freeze({
     contractVersion: "pi.boss-protected-provider.v1",
     adapterId: "pi",
-    providerPackage: "@dataforxyz/agent-intercom-pi",
+    providerPackage: "@ctliz/agent-intercom-pi",
     supportedBaseProtocolVersions: Object.freeze([4]),
     supportedFeatures: Object.freeze([supportedBossFeature]),
     protocolFeatureContractHash: "dae30efe2c48d2de0fe72a7ebdfd107d3feaefc180d42056ba05df6088a94364",

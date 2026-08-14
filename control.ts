@@ -1,5 +1,5 @@
 import { types as nodeUtilTypes } from "node:util";
-import type { BossControlEnvelope } from "@dataforxyz/agent-intercom-core/boss";
+import type { BossControlEnvelope } from "@ctliz/agent-intercom-core/boss";
 import { parseBossControl } from "./broker/boss-adapter.ts";
 
 export const INTERCOM_CONTROL_REGISTER_EVENT = "intercom:control:register";

@@ -1,4 +1,4 @@
-import type { BrokerCapabilityAdvertisement } from "@dataforxyz/agent-intercom-core/boss";
+import type { BrokerCapabilityAdvertisement } from "@ctliz/agent-intercom-core/boss";
 import type { IntercomCommonControlEnvelope } from "./control.ts";
 import type {
   BossParticipantRegistrationMetadata,

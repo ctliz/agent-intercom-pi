@@ -1,8 +1,8 @@
 import { EventEmitter } from "events";
 import net from "net";
 import { randomUUID } from "crypto";
-import { POLICY_SEMANTICS_VERSION } from "@dataforxyz/agent-intercom-core/policy";
-import { POLICY_SEMANTICS_HASH } from "@dataforxyz/agent-intercom-core/vectors";
+import { POLICY_SEMANTICS_VERSION } from "@ctliz/agent-intercom-core/policy";
+import { POLICY_SEMANTICS_HASH } from "@ctliz/agent-intercom-core/vectors";
 import { writeMessage, createMessageReader } from "./framing.ts";
 import { intercomScopeIdFromEnvForRegistration, parseIntercomScopeIdForRegistration } from "../protocol-v4/contract.ts";
 import { PersistentOutboundOutbox } from "../outbound-outbox.ts";

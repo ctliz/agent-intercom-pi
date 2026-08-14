@@ -9,7 +9,7 @@ import {
   BROKER_FEATURE_ATTESTATION_VERSION,
   BROKER_PROTECTED_PROVIDER_ROOT,
   INTERCOM_BASE_PROTOCOL_VERSION,
-} from "@dataforxyz/agent-intercom-core/boss";
+} from "@ctliz/agent-intercom-core/boss";
 import {
   brokerCapabilityAdvertisement,
   DORMANT_BOSS_READINESS,
@@ -230,6 +230,8 @@ test("provider import has no runtime integration and start fails before request 
   const source = readFileSync(new URL("provider/entry.ts", repositoryRoot), "utf8");
   const generatedSource = generatedProviderBytes().toString("utf8");
   for (const value of [source, generatedSource]) {
+    assert.doesNotMatch(value, /from ["']@ctliz\//);
+    // The retired namespace must not creep back into the provider entry either.
     assert.doesNotMatch(value, /from ["']@dataforxyz\//);
     assert.doesNotMatch(value, /node:(?:fs|child_process|net|process|os)/);
     assert.doesNotMatch(value, /systemctl|\.listen\(|\.connect\(|\.kill\(|\.spawn\(|broker\/(?:broker|spawn|paths|ownership)/);

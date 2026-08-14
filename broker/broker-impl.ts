@@ -2,9 +2,9 @@ import net from "net";
 import { existsSync, readFileSync, renameSync, writeFileSync, unlinkSync } from "fs";
 import { join } from "path";
 import { randomUUID } from "crypto";
-import { authorize, POLICY_SEMANTICS_VERSION, type PolicyState } from "@dataforxyz/agent-intercom-core/policy";
-import { POLICY_SEMANTICS_HASH } from "@dataforxyz/agent-intercom-core/vectors";
-import type { BossAuthorizationContext } from "@dataforxyz/agent-intercom-core/boss";
+import { authorize, POLICY_SEMANTICS_VERSION, type PolicyState } from "@ctliz/agent-intercom-core/policy";
+import { POLICY_SEMANTICS_HASH } from "@ctliz/agent-intercom-core/vectors";
+import type { BossAuthorizationContext } from "@ctliz/agent-intercom-core/boss";
 import { writeMessage, createMessageReader } from "./framing.ts";
 import { parseIntercomScopeIdForRegistration, sameIntercomScope } from "../protocol-v4/contract.ts";
 import {

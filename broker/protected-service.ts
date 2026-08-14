@@ -1,8 +1,8 @@
 import { types as nodeUtilTypes } from "node:util";
-import { BROKER_PROTECTED_PROVIDER_ROOT } from "@dataforxyz/agent-intercom-core/boss";
+import { BROKER_PROTECTED_PROVIDER_ROOT } from "@ctliz/agent-intercom-core/boss";
 
 export const PI_BOSS_PROTECTED_PROVIDER_ID = "pi" as const;
-export const PI_BOSS_PROTECTED_PROVIDER_PACKAGE = "@dataforxyz/agent-intercom-pi" as const;
+export const PI_BOSS_PROTECTED_PROVIDER_PACKAGE = "@ctliz/agent-intercom-pi" as const;
 export const PI_BOSS_PROTECTED_PROVIDER_ARTIFACT_PATH =
   `${BROKER_PROTECTED_PROVIDER_ROOT}${PI_BOSS_PROTECTED_PROVIDER_ID}/provider.mjs` as const;
 export const BOSS_PROTECTED_SERVICE_UNAVAILABLE = "BOSS_PROTECTED_SERVICE_UNAVAILABLE" as const;

@@ -10,7 +10,7 @@ import {
   intercomScopeIdFromEnv,
   parseIntercomScopeId,
   sameIntercomScope,
-} from "@dataforxyz/agent-intercom-core/protocol-v4";
+} from "@ctliz/agent-intercom-core/protocol-v4";
 
 export const INTERCOM_REGISTRATION_METADATA_ERROR = "Registration metadata is invalid" as const;
 

@@ -40,12 +40,16 @@ test("packed runtime installs the exact Core build without an SSH dependency", (
   const lock = readFileSync(new URL("package-lock.json", root), "utf8");
 
   assert.equal(manifest.engines?.node, ">=22.19.0");
-  assert.equal(manifest.peerDependencies?.["@dataforxyz/agent-intercom-core"], undefined);
+  assert.equal(manifest.peerDependencies?.["@ctliz/agent-intercom-core"], undefined);
   assert.equal(
-    manifest.dependencies?.["@dataforxyz/agent-intercom-core"],
-    "git+https://github.com/ctliz/agent-intercom-core.git#aad1985e125516b318181560293145bf2507cc6d",
+    manifest.dependencies?.["@ctliz/agent-intercom-core"],
+    "git+https://github.com/ctliz/agent-intercom-core.git#37e074970e2a9de32a16fc325607c3b476b0bd45",
   );
-  assert.equal(manifest.devDependencies?.["@dataforxyz/agent-intercom-core"], undefined);
+  assert.equal(manifest.devDependencies?.["@ctliz/agent-intercom-core"], undefined);
+  // The legacy namespace must not reappear as a dependency under any field.
+  for (const field of ["dependencies", "devDependencies", "peerDependencies"] as const) {
+    assert.equal(manifest[field]?.[`@${"dataforxyz"}/agent-intercom-core`], undefined);
+  }
 
   for (const name of ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "typebox"]) {
     assert.notEqual(manifest.dependencies?.[name], undefined);
@@ -54,18 +58,23 @@ test("packed runtime installs the exact Core build without an SSH dependency", (
   }
 
   const lockData = JSON.parse(lock) as { packages: Record<string, Record<string, unknown>> };
-  const coreEntry = lockData.packages["node_modules/@dataforxyz/agent-intercom-core"];
+  const coreEntry = lockData.packages["node_modules/@ctliz/agent-intercom-core"];
   assert.ok(coreEntry, "Core package entry missing from lockfile");
   assert.equal(
     coreEntry.resolved,
-    "git+https://github.com/ctliz/agent-intercom-core.git#aad1985e125516b318181560293145bf2507cc6d",
+    "git+https://github.com/ctliz/agent-intercom-core.git#37e074970e2a9de32a16fc325607c3b476b0bd45",
   );
   assert.equal(
     coreEntry.integrity,
-    "sha512-ycbxwD+OrwmDK+vJ3Mei7WKxbYI9GDEGoGQbXQwhgaT8twRmR3ny8WzEXei6NaIITDtEbWk3Qd0U5ZmQsE35mg==",
+    "sha512-b5MXnfKh/RCjKoVor0tsFO+NKAqPROWgkgbHt7jiHxhdVbSh7gWvOdnVUtpSdPwJLYKSQrYXT+TJl7QocdJEPA==",
   );
   assert.equal(lock.includes("git+ssh://git@github.com/ctliz/agent-intercom-core"), false);
-  assert.equal(lock.includes("git+ssh://git@github.com/dataforxyz/agent-intercom-core"), false);
+  assert.equal(lock.includes(`git+ssh://git@github.com/${"dataforxyz"}/agent-intercom-core`), false);
+  // connect.1 Core commits must not survive anywhere in the lock.
+  assert.equal(lock.includes("aad1985e125516b318181560293145bf2507cc6d"), false);
   assert.equal(lock.includes("8316cbab548f422ad11c78ed887fabeef94817c1"), false);
+  // The isolated mirror used to resolve an unpushed Core must never leak in.
   assert.doesNotMatch(lock, /file:\/\//);
+  assert.equal(lock.includes("core-c2-mirror"), false);
+  assert.equal(lock.includes(`@${"dataforxyz"}/agent-intercom-core`), false);
 });

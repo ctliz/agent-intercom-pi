@@ -1,6 +1,6 @@
 {
-  "name": "@dataforxyz/agent-intercom-pi",
-  "version": "0.11.0-connect.1",
+  "name": "@ctliz/agent-intercom-pi",
+  "version": "0.11.0-connect.2",
   "license": "AGPL-3.0-or-later",
   "type": "module",
   "main": "index.ts",
@@ -44,7 +44,7 @@
     ]
   },
   "dependencies": {
-    "@dataforxyz/agent-intercom-core": "git+https://github.com/ctliz/agent-intercom-core.git#aad1985e125516b318181560293145bf2507cc6d",
+    "@ctliz/agent-intercom-core": "git+https://github.com/ctliz/agent-intercom-core.git#37e074970e2a9de32a16fc325607c3b476b0bd45",
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",

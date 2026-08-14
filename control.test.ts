@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { BOSS_CONTROL_ENVELOPE_VERSION } from "@dataforxyz/agent-intercom-core/boss";
+import { BOSS_CONTROL_ENVELOPE_VERSION } from "@ctliz/agent-intercom-core/boss";
 import {
 	intercomControlKey,
 	isIntercomCommonControlEnvelope,

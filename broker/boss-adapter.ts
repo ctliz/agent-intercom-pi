@@ -23,20 +23,20 @@ import {
   type BossParticipantCredentialEnvelope,
   type BossRunFeatureContract,
   type BrokerCapabilityAdvertisement,
-} from "@dataforxyz/agent-intercom-core/boss";
+} from "@ctliz/agent-intercom-core/boss";
 import {
   parseBossPolicyPrincipal,
   type BossAuthorizationContext,
   type BossControlKind,
   type BossPrivatePrincipal,
-} from "@dataforxyz/agent-intercom-core/boss/policy";
+} from "@ctliz/agent-intercom-core/boss/policy";
 import {
   assertExactKeys,
   assertRecord,
   canonicalJson,
   ContractValidationError,
   readHexDigest,
-} from "@dataforxyz/agent-intercom-core/canonical";
+} from "@ctliz/agent-intercom-core/canonical";
 
 /** Gates which must all be implemented before Pi may advertise boss-run-v1. */
 export interface BossReadinessPredicates {
