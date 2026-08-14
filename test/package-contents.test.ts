@@ -43,7 +43,7 @@ test("packed runtime installs the exact Core build without an SSH dependency", (
   assert.equal(manifest.peerDependencies?.["@dataforxyz/agent-intercom-core"], undefined);
   assert.equal(
     manifest.dependencies?.["@dataforxyz/agent-intercom-core"],
-    "git+https://github.com/dataforxyz/agent-intercom-core.git#8316cbab548f422ad11c78ed887fabeef94817c1",
+    "git+https://github.com/ctliz/agent-intercom-core.git#aad1985e125516b318181560293145bf2507cc6d",
   );
   assert.equal(manifest.devDependencies?.["@dataforxyz/agent-intercom-core"], undefined);
 
@@ -53,5 +53,19 @@ test("packed runtime installs the exact Core build without an SSH dependency", (
     assert.equal(manifest.devDependencies?.[name], undefined);
   }
 
+  const lockData = JSON.parse(lock) as { packages: Record<string, Record<string, unknown>> };
+  const coreEntry = lockData.packages["node_modules/@dataforxyz/agent-intercom-core"];
+  assert.ok(coreEntry, "Core package entry missing from lockfile");
+  assert.equal(
+    coreEntry.resolved,
+    "git+https://github.com/ctliz/agent-intercom-core.git#aad1985e125516b318181560293145bf2507cc6d",
+  );
+  assert.equal(
+    coreEntry.integrity,
+    "sha512-ycbxwD+OrwmDK+vJ3Mei7WKxbYI9GDEGoGQbXQwhgaT8twRmR3ny8WzEXei6NaIITDtEbWk3Qd0U5ZmQsE35mg==",
+  );
+  assert.equal(lock.includes("git+ssh://git@github.com/ctliz/agent-intercom-core"), false);
   assert.equal(lock.includes("git+ssh://git@github.com/dataforxyz/agent-intercom-core"), false);
+  assert.equal(lock.includes("8316cbab548f422ad11c78ed887fabeef94817c1"), false);
+  assert.doesNotMatch(lock, /file:\/\//);
 });

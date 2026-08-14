@@ -25,7 +25,7 @@ async function readEventually(file: string, timeoutMs = 1000): Promise<string> {
   throw lastError instanceof Error ? lastError : new Error(`Timed out reading ${file}`);
 }
 
-test("copyTextToClipboard handles wl-copy helpers that daemonize", async () => {
+test("copyTextToClipboard handles wl-copy helpers that daemonize", { skip: process.platform !== "linux" }, async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "pi-intercom-clipboard-"));
   const outFile = path.join(dir, "clipboard.txt");
   const helper = path.join(dir, "wl-copy");

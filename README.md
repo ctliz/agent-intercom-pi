@@ -8,11 +8,29 @@
 
 | Harness | Repository |
 |---|---|
-| Pi | [`agent-intercom-pi`](https://github.com/dataforxyz/agent-intercom-pi) |
-| Codex | [`agent-intercom-codex`](https://github.com/dataforxyz/agent-intercom-codex) |
-| Claude Code | [`agent-intercom-claude`](https://github.com/dataforxyz/agent-intercom-claude) |
-| OpenCode | [`agent-intercom-opencode`](https://github.com/dataforxyz/agent-intercom-opencode) |
-| Fleet lifecycle | [`agent-intercom-orchestrator`](https://github.com/dataforxyz/agent-intercom-orchestrator) |
+| Core / Protocol | [`agent-intercom-core`](https://github.com/ctliz/agent-intercom-core) |
+| Pi | [`agent-intercom-pi`](https://github.com/ctliz/agent-intercom-pi) |
+| Codex | [`agent-intercom-codex`](https://github.com/ctliz/agent-intercom-codex) |
+| Claude Code | [`agent-intercom-claude`](https://github.com/ctliz/agent-intercom-claude) |
+| OpenCode | [`agent-intercom-opencode`](https://github.com/ctliz/agent-intercom-opencode) |
+| Fleet lifecycle | [`agent-intercom-orchestrator`](https://github.com/ctliz/agent-intercom-orchestrator) |
+
+## Maintenance & Upstream Provenance
+
+- **Maintained by `ctliz`**: This distribution is maintained independently by [ctliz](https://github.com/ctliz).
+- **Upstream Heritage**: Agent Intercom grew from [Nico Bailon's original `pi-intercom`](https://github.com/nicobailon/pi-intercom) and the upstream [`dataforxyz/agent-intercom-*`](https://github.com/dataforxyz/agent-intercom-pi) repositories. This project is not officially endorsed by or affiliated with upstream organizations.
+- **Branding & Compatibility**: The **Agent Intercom** branding and `@dataforxyz/*` package namespaces remain unchanged for full ecosystem compatibility across all agent adapters.
+
+## Protocol v4 & Broker-Enforced Scope
+
+Agent Intercom protocol v4 introduces **broker-enforced scope routing** via `AGENT_INTERCOM_SCOPE_ID`:
+
+- **Registration**: The client submits its `scopeId` once in the top-level registration payload.
+- **Broker Enforcement**: The shared local broker stores the scope in its private `ConnectedSession` record and enforces same-scope discovery (`intercom_list`), naming, and prefix matching.
+- **Cross-Scope Routing**: Cross-scope messaging is fail-closed; communication across different scopes is permitted only when addressing an explicit full session ID.
+- **UX Routing Isolation**: Scope is designed for same-OS-user workflow isolation (e.g. per-project or per-workspace agent teams), **not** as a cryptographic security principal, tenant boundary, or authentication credential.
+- **Leak-Free**: The raw `scopeId` value never enters `SessionInfo`, list payloads, lifecycle events, frontend displays, or execution logs.
+- **Standalone First**: `AGENT_INTERCOM_SCOPE_ID` is a general shell/IDE/service launcher contract. Agent Intercom works completely standalone in any terminal, tmux window, or script; TmuxDeck is optional visual tooling.
 
 ## Origin and thanks
 
@@ -43,13 +61,7 @@ Each pi session that has `pi-intercom` loaded and enabled connects to a tiny loc
 ## Install
 
 ```bash
-pi install npm:@dataforxyz/agent-intercom-pi
-```
-
-For a Git-pinned install instead:
-
-```bash
-pi install git:github.com/dataforxyz/agent-intercom-pi@v0.9.1
+pi install git:github.com/ctliz/agent-intercom-pi@v0.11.0-connect.1
 ```
 
 Then restart Pi. The extension auto-connects to the broker on startup and registers the bundled `pi-intercom` skill for common coordination patterns.
@@ -57,7 +69,7 @@ Then restart Pi. The extension auto-connects to the broker on startup and regist
 To let Pi create and safely own persistent Pi, Codex, Claude Code, and OpenCode coworkers, install the companion orchestrator Pi plugin too:
 
 ```bash
-pi install npm:@dataforxyz/agent-intercom-orchestrator
+pi install git:github.com/ctliz/agent-intercom-orchestrator@v0.11.0-connect.1
 ```
 
 Restart Pi or run `/reload`, then verify:
@@ -95,7 +107,7 @@ A session becomes intercom-connected when all of these are true:
 
 The session list only shows intercom-connected sessions, not every open Pi process on the machine.
 
-If you upgrade pi-intercom or the orchestrator while sessions are already open, run `/reload` in each open Pi session (and restart any companion `coi`, `cci`, or OpenCode adapter). Update the packages with `pi update --extension npm:@dataforxyz/agent-intercom-pi` and `pi update --extension npm:@dataforxyz/agent-intercom-orchestrator`. Extensions are loaded into the running host process, so an existing session cannot adopt new broker/discovery code until it reloads. This is especially important when upgrading from a release that allowed multiple broker processes to form separate session-list "islands": the broker ownership fix prevents new splits, but it cannot move clients that are still running the old code. After every host has reloaded once, they converge on the same broker automatically.
+If you upgrade pi-intercom or the orchestrator while sessions are already open, run `/reload` in each open Pi session (and restart any companion `coi`, `cci`, or OpenCode adapter). Update the packages by reinstalling the exact release tags with `pi install git:github.com/ctliz/agent-intercom-pi@v0.11.0-connect.1` and `pi install git:github.com/ctliz/agent-intercom-orchestrator@v0.11.0-connect.1`. Extensions are loaded into the running host process, so an existing session cannot adopt new broker/discovery code until it reloads. This is especially important when upgrading from a release that allowed multiple broker processes to form separate session-list "islands": the broker ownership fix prevents new splits, but it cannot move clients that are still running the old code. After every host has reloaded once, they converge on the same broker automatically.
 
 If `/intercom` still reports no peers, first confirm the other Pi windows have pi-intercom loaded and have also been reloaded. Open Pi processes without the extension, disabled sessions, and sessions using a different `PI_CODING_AGENT_DIR` intentionally do not appear in the same list.
 
@@ -399,7 +411,7 @@ The supervisor can reply with plain JSON or a fenced `json` block. If the reply 
 | `intercom_ask` | required `to`, required `message`, optional `attachments` | Ask and wait briefly for a reply |
 | `intercom_reply` | required `message`, optional `askId`, `to`, `which` | Reply to the active or pending inbound message; `askId` selects an exact unresolved ask, while `to`/`which` remain compatible selectors |
 | `intercom_team` | none | Show the current manager and live coworkers owned by that manager |
-| `intercom_list` | none | List connected sessions globally |
+| `intercom_list` | none | List connected sessions in your scope |
 | `intercom_pending` | optional `askId`, `session` | List unresolved inbound asks with stable IDs; `askId` retrieves the full untruncated body, and managers may use `session` for an owned coworker |
 | `intercom_status` | none | Show connection and queue status |
 
@@ -425,7 +437,7 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 
 **`intercom_team`** reads orchestrator ownership dynamically and returns the current manager plus live same-manager coworkers. After adoption it follows the new manager without restarting the worker; `AGENT_INTERCOM_MANAGER_TARGET` is only a startup fallback.
 
-**`intercom_list`** returns the current session plus other active intercom-connected sessions with name, short ID, working directory, model, and live status. It is global, so orchestrator-owned workers should prefer `intercom_team` for their group.
+**`intercom_list`** returns the current session plus other active intercom-connected sessions with name, short ID, working directory, model, and live status. Under protocol v4 it is same-scope: it returns only sessions sharing your scope (or only unscoped sessions when you are unscoped). Cross-scope contact is possible only by exact full session ID. Orchestrator-owned workers should still prefer `intercom_team` for their group.
 
 **`intercom_send`** sends immediately and distinguishes broker `accepted` from receiver-acknowledged `delivered`. Set `confirmSend: true` for an interactive confirmation dialog.
 
@@ -454,7 +466,7 @@ Boss-launched Pi sessions can provide this advisory environment contract:
 | `AGENT_INTERCOM_BOSS_TEAM_TARGETS` | JSON array containing exactly the canonical Manager, Worker, Scout, and prospective Adversary session IDs |
 | `AGENT_INTERCOM_BOSS_VISIBILITY` | `team-only` or `local`; defaults to `team-only` when Boss metadata is present |
 
-In `team-only` mode, `intercom_team` shows only live canonical teammates. A Manager also sees and may contact the exact creating Controller; worker, scout, and adversary roles cannot contact that Controller. The sole lower-role exception is the exact versioned Orchestrator readiness probe/ack control handshake with that Controller; it is consumed as registered extension control, never exposed to the model or ordinary inbox/reply paths, and does not authorize any other control or message. Global `intercom_list` discovery is not registered, the legacy list action is denied, and `/intercom` / Alt+M show the same permitted live set. Outbound sends, asks, replies, overlay delivery, and inbound messages use exact stable session IDs only: names, case folding, and ID prefixes are rejected. Inbound policy is applied before inbox persistence, reply tracking, activity events, or model triggering. Boss sessions discard persisted outbound messages instead of replaying them after reconnect, because broker replay cannot independently prove that a stored string still denotes the intended exact live ID. The prospective Adversary appears only after its canonical exact ID connects.
+In `team-only` mode, `intercom_team` shows only live canonical teammates. A Manager also sees and may contact the exact creating Controller; worker, scout, and adversary roles cannot contact that Controller. The sole lower-role exception is the exact versioned Orchestrator readiness probe/ack control handshake with that Controller; it is consumed as registered extension control, never exposed to the model or ordinary inbox/reply paths, and does not authorize any other control or message. Same-scope `intercom_list` discovery is not registered, the legacy list action is denied, and `/intercom` / Alt+M show the same permitted live set. Outbound sends, asks, replies, overlay delivery, and inbound messages use exact stable session IDs only: names, case folding, and ID prefixes are rejected. Inbound policy is applied before inbox persistence, reply tracking, activity events, or model triggering. Boss sessions discard persisted outbound messages instead of replaying them after reconnect, because broker replay cannot independently prove that a stored string still denotes the intended exact live ID. The prospective Adversary appears only after its canonical exact ID connects.
 
 The contract is all-or-nothing: if any Boss variable is present but metadata is incomplete, malformed, noncanonical, or inconsistent with the connected session's declared role, discovery and delivery fail closed. `AGENT_INTERCOM_BOSS_VISIBILITY=local` broadens discovery and communication to local sessions but still requires exact stable IDs. TRUSTED LOCAL MODE — same-user agents and local files are trusted; evidence is advisory, not tamper-proof. Team metadata is advisory trusted-local scoping, not broker-enforced hostile-agent isolation.
 
@@ -611,6 +623,13 @@ Use pi-messenger for multi-agent swarms working on a shared task. Use pi-interco
     └── pi-intercom/
         └── SKILL.md      # Bundled skill for common patterns
 ```
+
+## Compatibility, Migration & Rollback
+
+- **Single Shared Broker**: All adapters on the machine connect to one local broker over a Unix domain socket (`~/.pi/agent/intercom/broker.sock` or `$PI_CODING_AGENT_DIR/intercom/broker.sock`).
+- **All-or-Nothing Family Upgrade**: Protocol v4 is a family-wide change. Every adapter on the machine (`pi`, `claude`, `codex`, `opencode`, `orchestrator`) must be upgraded together in the same maintenance window. A partially upgraded machine is not a supported configuration.
+- **Fail-Closed Legacy Handling**: An incompatible legacy (v3) broker or client fails closed. It is rejected at negotiation and never killed, never downgraded, and never allowed to form a second broker island.
+- **Family Rollback (all-or-nothing)**: Rolling back is family-wide. Restore the exact specs and lockfiles you backed up before the upgrade, for every adapter together, then reload all active agent sessions. There is no published pre-v4 tag under `ctliz` to roll back to, so a pre-upgrade backup of the exact installed specs/locks is the supported rollback material. Rolling back only one adapter leaves the family in an unsupported mixed state.
 
 ## Limitations
 

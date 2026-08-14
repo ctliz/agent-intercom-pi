@@ -254,7 +254,7 @@ test("provider import has no runtime integration and start fails before request 
 
 test("protected-provider packaging does not activate or advertise Boss", () => {
   assert.deepEqual(brokerCapabilityAdvertisement(), {
-    baseProtocolVersion: 3,
+    baseProtocolVersion: 4,
     features: [],
   });
   assert.deepEqual(DORMANT_BOSS_READINESS, {

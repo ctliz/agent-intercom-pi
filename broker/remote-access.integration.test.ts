@@ -84,7 +84,7 @@ function registration(name: string, sessionId: string, access?: unknown) {
   return {
     type: "register",
     protocol: "pi-intercom",
-    version: 3,
+    version: 4,
     sessionId,
     ...(access ? { access } : {}),
     session: {
@@ -99,7 +99,7 @@ function registration(name: string, sessionId: string, access?: unknown) {
 }
 
 test("authenticated remote gateway assigns identity and enforces ownership-tree visibility", { concurrency: false }, async () => {
-  const agentDir = mkdtempSync(join(tmpdir(), "agent-intercom-remote-gateway-"));
+  const agentDir = mkdtempSync(join("/tmp", "pir-"));
   const intercomDir = join(agentDir, "intercom");
   const localPath = join(intercomDir, "broker.sock");
   const remotePath = join(intercomDir, "remote-gateway.sock");
@@ -119,7 +119,7 @@ test("authenticated remote gateway assigns identity and enforces ownership-tree 
       type: "health_ok",
       requestId: "health-1",
       protocol: "pi-intercom",
-      version: 3,
+      version: 4,
       endpoint: "remote",
       remoteAccess: {
         feature: "remote-access-v1",

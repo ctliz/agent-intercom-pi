@@ -2,9 +2,9 @@ const supportedBossFeature = Object.freeze({
   version: "intercom.broker-feature.v1",
   feature: "boss-run-v1",
   featureVersion: 1,
-  semanticsHash: "91dc85ea8c896b9394ebc30db4689803004dbb1c5455eca763a09d0caef167f1",
+  semanticsHash: "8943eb60d29afa5264322b5cc7df3de245b01b1cf48a8cbf9cfb6188b02fcfa9",
   controlEnvelopeVersion: 1,
-  capabilityDigest: "6090d92d87223209c653111e2d22a6921e818f71c76b61679f1480ebe021a119",
+  capabilityDigest: "239bee8bb64cc8c149d49ac00c7396f33f375a89a1d6dea6bd86ff840d551a59",
 });
 
 /** Immutable build-time contract only; it is not an installed-provider claim. */
@@ -12,9 +12,9 @@ export const PI_BOSS_PROTECTED_PROVIDER_BUILD_IDENTITY = Object.freeze({
   contractVersion: "pi.boss-protected-provider.v1",
   adapterId: "pi",
   providerPackage: "@dataforxyz/agent-intercom-pi",
-  supportedBaseProtocolVersions: Object.freeze([3]),
+  supportedBaseProtocolVersions: Object.freeze([4]),
   supportedFeatures: Object.freeze([supportedBossFeature]),
-  protocolFeatureContractHash: "3532c82524f651a5ea8c18a5d8d9689955237d6f68227fc32b1c38e7ea8825d0",
+  protocolFeatureContractHash: "dae30efe2c48d2de0fe72a7ebdfd107d3feaefc180d42056ba05df6088a94364",
   authoritative: false,
   providerStartAvailable: false,
   bossAdvertisementEnabled: false,

@@ -7,6 +7,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { IntercomClient, type SendResult } from "./broker/client.ts";
 import { parseBossControl } from "./broker/boss-adapter.ts";
 import { spawnBrokerIfNeeded } from "./broker/spawn.ts";
+import { intercomScopeIdFromEnvForRegistration } from "./protocol-v4/contract.ts";
 import { SessionListOverlay } from "./ui/session-list.ts";
 import { ComposeOverlay, type ComposeResult } from "./ui/compose.ts";
 import { InlineMessageComponent } from "./ui/inline-message.ts";
@@ -621,6 +622,7 @@ function getNamePollMs(): number {
   return 1000;
 }
 export default function piIntercomExtension(pi: ExtensionAPI) {
+  const runtimeScopeId = intercomScopeIdFromEnvForRegistration();
   let client: IntercomClient | null = null;
   const config: IntercomConfig = loadConfig();
   const bossTeamScope = readBossTeamScope();
@@ -1190,6 +1192,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     const nextReconnectPromise = (async () => {
       const nextClient = new IntercomClient({
         authorizeOutboxReplayTarget: () => !bossTeamScope.present,
+        ...(runtimeScopeId === undefined ? { env: {} } : { scopeId: runtimeScopeId }),
       });
       client = nextClient;
       attachClientHandlers(nextClient);
@@ -1628,7 +1631,6 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     if (!getLiveContext()) {
       return;
     }
-    replyTracker.endTurn();
     scheduleInboundFlush(0);
   });
   pi.on("agent_start", () => {
@@ -1657,6 +1659,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     if (!getLiveContext()) {
       return;
     }
+    replyTracker.endTurn();
     agentRunning = false;
     activeTools.clear();
     syncPresenceStatus();
@@ -2344,6 +2347,8 @@ Usage:
             if (threadedReplyTo) {
               replyTracker.markReplied(threadedReplyTo, target.from.id);
               inboundInbox?.dismissPendingAsk(threadedReplyTo, target.from.id);
+            } else {
+              replyTracker.dismissOrdinarySender(target.from.id);
             }
             pi.appendEntry("intercom_sent", {
               to: bossTeamScope.present ? target.from.id : target.from.name || target.from.id,

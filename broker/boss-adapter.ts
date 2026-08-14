@@ -168,7 +168,7 @@ export function parseBossParticipantRegistrationMetadata(value: unknown): BossPa
     || capabilityDigest !== BOSS_CAPABILITY_FEATURE_DIGEST
     || credential.namespace !== BOSS_RUN_FEATURE
   ) {
-    throw new ContractValidationError("$.boss", "must exactly request boss-run-v1 over base protocol v3");
+    throw new ContractValidationError("$.boss", "must exactly request boss-run-v1 over base protocol v4");
   }
   return { featureContract, capabilityDigest, credential };
 }

@@ -111,24 +111,34 @@ export function parseSessionRegistration(value: unknown): SessionRegistration | 
   }
 }
 
-/** Exact outer client register frame; remote-access fields remain optional by transport. */
+/** Exact outer client register envelope, validated before nested registration data. */
+export function isExactClientRegistrationEnvelope(value: unknown): value is Record<string, unknown> & {
+  type: "register";
+  protocol: unknown;
+  version: unknown;
+  session: unknown;
+} {
+  try {
+    if (!isExactPlainDataRecord(
+      value,
+      ["type", "protocol", "version", "session"],
+      ["sessionId", "stateId", "access", "scopeId"],
+    )) return false;
+    return dataValue(value, "type") === "register";
+  } catch {
+    return false;
+  }
+}
+
+/** Exact outer client register frame with validated nested session data. */
 export function isExactClientRegistrationRequest(value: unknown): value is Record<string, unknown> & {
   type: "register";
   protocol: string;
   version: number;
   session: SessionRegistration;
 } {
-  try {
-    if (!isExactPlainDataRecord(
-      value,
-      ["type", "protocol", "version", "session"],
-      ["sessionId", "stateId", "access"],
-    )) return false;
-    if (dataValue(value, "type") !== "register") return false;
-    return parseSessionRegistration(dataValue(value, "session")) !== null;
-  } catch {
-    return false;
-  }
+  return isExactClientRegistrationEnvelope(value)
+    && parseSessionRegistration(dataValue(value, "session")) !== null;
 }
 
 /** Exact outer registered frame for the one mode requested by this client. */

@@ -62,7 +62,7 @@ test("multiple asks in one batch require explicit replyTo unless sender disambig
   assert.equal(tracker.resolveReplyTarget({ replyTo: "ask-1" }, 1003).from.id, "planner-id");
 });
 
-test("multiple ordinary messages in one batch do not choose an arbitrary reply target", () => {
+test("multiple ordinary messages in one batch select the latest same-sender context", () => {
   const tracker = new ReplyTracker();
   const from = createSession("planner-id", "planner");
   const first = tracker.recordIncomingMessage(from, createMessage("note-1", "First", false), 1000);
@@ -70,7 +70,7 @@ test("multiple ordinary messages in one batch do not choose an arbitrary reply t
   tracker.queueTurnContexts([first, second]);
   tracker.beginTurn(1002);
 
-  assert.throws(() => tracker.resolveReplyTarget({}, 1003), /Multiple messages are active/);
+  assert.equal(tracker.resolveReplyTarget({}, 1003).message.id, "note-2");
 });
 
 test("reply resolves from single pending ask without current turn context", () => {
@@ -217,4 +217,41 @@ test("dismissing a pending ask removes queued turn context", () => {
   tracker.beginTurn(1001);
 
   assert.throws(() => tracker.resolveReplyTarget({}, 1002), /No active intercom context to reply to/);
+});
+
+
+test("ordinary reply context survives provider loops and clears after success", () => {
+  const tracker = new ReplyTracker();
+  const from = createSession("planner-id", "planner");
+  const context = tracker.recordIncomingMessage(from, createMessage("note-loop", "Update", false), 1000);
+  tracker.queueTurnContext(context);
+  tracker.beginTurn(1001);
+  tracker.beginTurn(1002);
+  assert.equal(tracker.resolveReplyTarget({}, 1003).message.id, "note-loop");
+  tracker.dismissOrdinarySender("planner-id");
+  assert.throws(() => tracker.resolveReplyTarget({}, 1004), /No active intercom context/);
+});
+
+test("agent-run cleanup removes ordinary context", () => {
+  const tracker = new ReplyTracker();
+  const context = tracker.recordIncomingMessage(createSession("planner-id", "planner"), createMessage("note-clean", "Update", false), 1000);
+  tracker.queueTurnContext(context);
+  tracker.beginTurn(1001);
+  tracker.endTurn();
+  tracker.beginTurn(1002);
+  assert.throws(() => tracker.resolveReplyTarget({}, 1003), /No active intercom context/);
+});
+
+test("a new batch waits until the active agent run ends", () => {
+  const tracker = new ReplyTracker();
+  const first = tracker.recordIncomingMessage(createSession("planner-id", "planner"), createMessage("note-first", "First", false), 1000);
+  const second = tracker.recordIncomingMessage(createSession("reviewer-id", "reviewer"), createMessage("note-second", "Second", false), 1001);
+  tracker.queueTurnContext(first);
+  tracker.beginTurn(1002);
+  tracker.queueTurnContext(second);
+  tracker.beginTurn(1003);
+  assert.equal(tracker.resolveReplyTarget({}, 1004).message.id, "note-first");
+  tracker.endTurn();
+  tracker.beginTurn(1005);
+  assert.equal(tracker.resolveReplyTarget({}, 1006).message.id, "note-second");
 });

@@ -32,6 +32,18 @@ function requestedBossRegistration() {
   };
 }
 
+test("scope is validated before socket creation and captured for the client lifecycle", async () => {
+  assert.throws(() => new IntercomClient({ env: { AGENT_INTERCOM_SCOPE_ID: " invalid-scope-value" } }), /Registration metadata is invalid/);
+
+  const env = { AGENT_INTERCOM_SCOPE_ID: "Scope_1234567890" };
+  const client = new IntercomClient({ env });
+  env.AGENT_INTERCOM_SCOPE_ID = "scope_1234567890";
+  assert.equal((client as any).scopeId, "Scope_1234567890");
+
+  const explicit = new IntercomClient({ scopeId: "Other_1234567890", env });
+  assert.equal((explicit as any).scopeId, "Other_1234567890");
+});
+
 test("cancelAsk resolves false after synchronous socket write failures", async () => {
   const client = new IntercomClient();
   (client as any)._sessionId = "session-1";
@@ -54,7 +66,7 @@ test("a client that requested Boss rejects absent capability and binding respons
     type: "registered",
     sessionId: "worker-session",
     protocol: "pi-intercom",
-    version: 3,
+    version: 4,
   }), /Invalid registered message/);
 
   const absentBindingClient = new IntercomClient();
@@ -63,7 +75,7 @@ test("a client that requested Boss rejects absent capability and binding respons
     type: "registered",
     sessionId: "worker-session",
     protocol: "pi-intercom",
-    version: 3,
+    version: 4,
     capabilities: brokerCapabilityAdvertisement({
       providerAttested: true,
       brokerIdentityVerified: true,
@@ -150,7 +162,7 @@ test("client Boss registration and live metadata boundaries reject proxies witho
     type: "registered",
     sessionId: "worker-session",
     protocol: "pi-intercom",
-    version: 3,
+    version: 4,
   }, {
     get() {
       registeredFrameTraps += 1;

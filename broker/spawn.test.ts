@@ -130,7 +130,7 @@ test("isBrokerHealthOkMessage pins the remote policy semantic contract", () => {
     type: "health_ok",
     requestId: "req-1",
     protocol: "pi-intercom",
-    version: 3,
+    version: 4,
     endpoint: "local",
     remoteAccess: {
       feature: "remote-access-v1",

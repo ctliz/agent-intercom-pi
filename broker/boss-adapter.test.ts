@@ -115,7 +115,7 @@ export function bossSessionMetadata(
 }
 
 test("Boss remains dormant until every readiness predicate is true", () => {
-  assert.deepEqual(brokerCapabilityAdvertisement(), { baseProtocolVersion: 3, features: [] });
+  assert.deepEqual(brokerCapabilityAdvertisement(), { baseProtocolVersion: 4, features: [] });
   assert.deepEqual(missingBossReadinessPredicates(DORMANT_BOSS_READINESS), [
     "providerAttested",
     "brokerIdentityVerified",

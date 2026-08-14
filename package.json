@@ -1,15 +1,20 @@
 {
   "name": "@dataforxyz/agent-intercom-pi",
-  "version": "0.10.0",
+  "version": "0.11.0-connect.1",
   "license": "AGPL-3.0-or-later",
   "type": "module",
   "main": "index.ts",
+  "exports": {
+    ".": "./index.ts"
+  },
   "files": [
     "banner.png",
     "*.ts",
     "!*.test.ts",
     "broker/**/*.ts",
     "!broker/**/*.test.ts",
+    "protocol-v4/**/*.ts",
+    "!protocol-v4/**/*.test.ts",
     "provider/provider.mjs",
     "!provider/entry.ts",
     "ui/**/*.ts",
@@ -23,8 +28,8 @@
   "scripts": {
     "build:protected-provider": "node scripts/build-protected-provider.mjs",
     "prepack": "npm run build:protected-provider",
-    "test": "tsx --test broker/*.test.ts *.test.ts test/*.test.ts",
-    "test:ci": "tsx --test --test-concurrency=1 broker/*.test.ts *.test.ts test/*.test.ts",
+    "test": "tsx --test broker/*.test.ts *.test.ts test/*.test.ts protocol-v4/*.test.ts",
+    "test:ci": "tsx --test --test-concurrency=1 broker/*.test.ts *.test.ts test/*.test.ts protocol-v4/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "keywords": [
@@ -39,7 +44,7 @@
     ]
   },
   "dependencies": {
-    "@dataforxyz/agent-intercom-core": "git+https://github.com/dataforxyz/agent-intercom-core.git#8316cbab548f422ad11c78ed887fabeef94817c1",
+    "@dataforxyz/agent-intercom-core": "git+https://github.com/ctliz/agent-intercom-core.git#aad1985e125516b318181560293145bf2507cc6d",
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
@@ -58,10 +63,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/dataforxyz/agent-intercom-pi.git"
+    "url": "git+https://github.com/ctliz/agent-intercom-pi.git"
   },
-  "homepage": "https://github.com/dataforxyz/agent-intercom-pi#readme",
+  "homepage": "https://github.com/ctliz/agent-intercom-pi#readme",
   "bugs": {
-    "url": "https://github.com/dataforxyz/agent-intercom-pi/issues"
+    "url": "https://github.com/ctliz/agent-intercom-pi/issues"
   }
 }

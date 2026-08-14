@@ -39,7 +39,7 @@ const bossEnvKeys = [
   "AGENT_INTERCOM_BOSS_TEAM_TARGETS",
   "AGENT_INTERCOM_BOSS_VISIBILITY",
 ] as const;
-const sharedHomeDir = mkdtempSync(path.join(tmpdir(), "pi-intercom-home-"));
+const sharedHomeDir = mkdtempSync(path.join("/tmp", "pih-"));
 const previousHome = process.env.HOME;
 const previousUserProfile = process.env.USERPROFILE;
 const previousLegacyTool = process.env.PI_INTERCOM_LEGACY_TOOL;
@@ -473,7 +473,7 @@ async function connectRawRegistered(sessionId: string, name: string, sessionOver
   writeMessage(socket, {
     type: "register",
     protocol: "pi-intercom",
-    version: 3,
+    version: 4,
     sessionId,
     session: {
       name,
@@ -579,7 +579,7 @@ test("opt-in TCP broker requires endpoint state for health and registration", { 
       type: "health_ok",
       requestId: "authorized-health",
       protocol: "pi-intercom",
-      version: 3,
+      version: 4,
       endpoint: "local",
       remoteAccess: {
         feature: "remote-access-v1",
@@ -606,13 +606,13 @@ test("opt-in TCP broker requires endpoint state for health and registration", { 
     assert.deepEqual(mismatchMessages, [{
       type: "error",
       code: "PROTOCOL_MISMATCH",
-      error: "Unsupported intercom protocol; expected pi-intercom v3",
+      error: "Unsupported intercom protocol; expected pi-intercom v4",
     }]);
 
     const registerMessages = await exchange({
       type: "register",
       protocol: "pi-intercom",
-      version: 3,
+      version: 4,
       sessionId: "authorized-tcp-client",
       stateId,
       session: {
@@ -628,7 +628,7 @@ test("opt-in TCP broker requires endpoint state for health and registration", { 
       type: "registered",
       sessionId: "authorized-tcp-client",
       protocol: "pi-intercom",
-      version: 3,
+      version: 4,
     }]);
   } finally {
     await stopBrokerProcess(broker);
@@ -898,7 +898,7 @@ test("broker owns local trust metadata instead of trusting registration payloads
     writeMessage(socket, {
       type: "register",
       protocol: "pi-intercom",
-      version: 3,
+      version: 4,
       sessionId: "trust-metadata-worker-id",
       session: {
         name: "trust-metadata-worker",
@@ -2355,6 +2355,13 @@ test("registered controls recover from the durable inbox after a runtime restart
     assert.equal(new PersistentInboundInbox(sessionId).size, 0);
   } finally {
     await harness.emitLifecycle("session_shutdown");
+    const pidPath = path.join(sharedHomeDir, ".pi", "agent", "intercom", "broker.pid");
+    const deadline = Date.now() + 1000;
+    while (!existsSync(pidPath) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+    if (existsSync(pidPath)) {
+      await import("./broker/spawn.ts").then(({ stopBrokerProcess }) => stopBrokerProcess(pidPath)).catch(() => undefined);
+    }
+    rmSync(path.join(sharedHomeDir, ".pi", "agent", "intercom", "inbox"), { recursive: true, force: true });
   }
 });
 
@@ -3480,7 +3487,7 @@ test("receiver rejection returns an immediate structured delivery failure", { co
 });
 
 test("durable sender outbox replays an accepted message after broker crash", { concurrency: false }, async () => {
-  const agentDir = mkdtempSync(path.join(tmpdir(), "pi-intercom-outbox-agent-"));
+  const agentDir = mkdtempSync(path.join("/tmp", "pio-"));
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = agentDir;
   const spawnBroker = () => spawn(process.execPath, ["--import", "tsx", path.join(repoDir, "broker", "broker.ts")], {
@@ -3643,7 +3650,7 @@ test("deferred asks allow reverse asks, remain replyable, and notify cancellatio
 });
 
 test("deferred asks remain replyable after a broker restart", { concurrency: false }, async () => {
-  const agentDir = mkdtempSync(path.join(tmpdir(), "pi-intercom-restart-agent-"));
+  const agentDir = mkdtempSync(path.join("/tmp", "pia-"));
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = agentDir;
 

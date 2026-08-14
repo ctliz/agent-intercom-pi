@@ -145,7 +145,7 @@ export type AskCancellationReason =
 
 export type ClientMessage =
   | { type: "health"; requestId: string; stateId?: string }
-  | { type: "register"; protocol: string; version: number; session: SessionRegistration; sessionId?: string; stateId?: string; access?: RemoteRegistrationAccess }
+  | { type: "register"; protocol: string; version: number; session: SessionRegistration; sessionId?: string; stateId?: string; access?: RemoteRegistrationAccess; scopeId?: string }
   | { type: "access_control"; requestId: string; adminToken: string; action: "issue_enrollment"; enrollment: { name: string; parentSessionId: string; rootSessionId: string; remoteHostId: string; ttlMs?: number; expiresAt?: number; canDelegate?: boolean; maxDepth?: number; maxChildren?: number } }
   | { type: "access_control"; requestId: string; adminToken: string; action: "revoke_subtree"; principalId: string }
   | { type: "access_control"; requestId: string; adminToken: string; action: "inspect_tree"; principalId: string }

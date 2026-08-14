@@ -7,6 +7,7 @@ import {
   BOSS_RUN_FEATURE_CONTRACT,
 } from "@dataforxyz/agent-intercom-core/boss";
 import {
+  isExactClientRegistrationEnvelope,
   isExactClientRegistrationRequest,
   isExactRegisteredFrame,
   parseSessionRegistration,
@@ -117,10 +118,15 @@ test("registration request and nested Boss graphs reject proxies with zero traps
   const request = {
     type: "register",
     protocol: "pi-intercom",
-    version: 3,
+    version: 4,
     session,
   };
+  assert.equal(isExactClientRegistrationEnvelope(request), true);
   assert.equal(isExactClientRegistrationRequest(request), true);
+  assert.equal(isExactClientRegistrationEnvelope({ ...request, scopeId: "Scope_1234567890" }), true);
+  assert.equal(isExactClientRegistrationRequest({ ...request, scopeId: "Scope_1234567890" }), true);
+  assert.equal(isExactClientRegistrationEnvelope({ ...request, session: { folded: true } }), true);
+  assert.equal(isExactClientRegistrationRequest({ ...request, session: { folded: true } }), false);
 
   const outer = trapCountingProxy(request);
   assert.equal(isExactClientRegistrationRequest(outer.proxy), false);
@@ -142,7 +148,7 @@ test("registered frames have exact mode-specific baseline shapes", () => {
     type: "registered",
     sessionId: "session-a",
     protocol: "pi-intercom",
-    version: 3,
+    version: 4,
   };
   assert.equal(isExactRegisteredFrame(ordinary, "ordinary"), true);
   for (const foldedKey of ["boss", "capabilities", "binding", "principal", "bossRunId", "bindingEpoch"]) {

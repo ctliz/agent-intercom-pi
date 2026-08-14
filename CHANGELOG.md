@@ -1,7 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.11.0-connect.1 - 2026-08-14
 
+- Support Protocol v4 broker-enforced scope isolation (`AGENT_INTERCOM_SCOPE_ID`) and canonical `ctliz` distribution.
+- Pin Core runtime dependency to canonical commit `aad1985e125516b318181560293145bf2507cc6d` (`v0.1.0-connect.1`).
 - Give unresolved inbound asks deterministic receiver-local IDs, keep compact previews in list mode, add untruncated full-body retrieval and exact reply selection by ask ID, and let managers inspect only their owned coworkers' pending inboxes.
 - Show millisecond send/delivery timestamps and deltas on Intercom tool results, plus sent/received/read timestamps and per-stage latency on inbound TUI messages.
 - Prevent two live local runtimes from repeatedly evicting each other when they open the same stable Pi session ID. Reconnects from one runtime retain safe stale-socket replacement, while a different runtime receives `SESSION_ID_IN_USE` and the original connection remains authoritative. Fence defer/cancel controls from superseded sockets after an allowed reconnect.
