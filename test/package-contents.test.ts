@@ -43,7 +43,7 @@ test("packed runtime installs the exact Core build without an SSH dependency", (
   assert.equal(manifest.peerDependencies?.["@ctliz/agent-intercom-core"], undefined);
   assert.equal(
     manifest.dependencies?.["@ctliz/agent-intercom-core"],
-    "git+https://github.com/ctliz/agent-intercom-core.git#37e074970e2a9de32a16fc325607c3b476b0bd45",
+    "0.2.0",
   );
   assert.equal(manifest.devDependencies?.["@ctliz/agent-intercom-core"], undefined);
   // The legacy namespace must not reappear as a dependency under any field.
@@ -62,11 +62,11 @@ test("packed runtime installs the exact Core build without an SSH dependency", (
   assert.ok(coreEntry, "Core package entry missing from lockfile");
   assert.equal(
     coreEntry.resolved,
-    "git+https://github.com/ctliz/agent-intercom-core.git#37e074970e2a9de32a16fc325607c3b476b0bd45",
+    "https://registry.npmjs.org/@ctliz/agent-intercom-core/-/agent-intercom-core-0.2.0.tgz",
   );
   assert.equal(
     coreEntry.integrity,
-    "sha512-b5MXnfKh/RCjKoVor0tsFO+NKAqPROWgkgbHt7jiHxhdVbSh7gWvOdnVUtpSdPwJLYKSQrYXT+TJl7QocdJEPA==",
+    "sha512-eWFpUm/yyT3jyvj/1g/MbjbdoZmn5FgzJFJ3HpO7nkvTkeJRRue+t7amQ8DeVw6QAe6/b55b2twqGuIi4ualDg==",
   );
   assert.equal(lock.includes("git+ssh://git@github.com/ctliz/agent-intercom-core"), false);
   assert.equal(lock.includes(`git+ssh://git@github.com/${"dataforxyz"}/agent-intercom-core`), false);

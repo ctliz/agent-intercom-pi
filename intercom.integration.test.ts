@@ -21,7 +21,7 @@ import {
 } from "./control.ts";
 
 const repoDir = process.cwd();
-const childEnvKeys = [
+const identityEnvKeys = [
   "PI_SUBAGENT_ORCHESTRATOR_TARGET",
   "PI_SUBAGENT_ORCHESTRATOR_SESSION_ID",
   "PI_INTERCOM_SESSION_ID",
@@ -30,7 +30,18 @@ const childEnvKeys = [
   "PI_SUBAGENT_CHILD_AGENT",
   "PI_SUBAGENT_CHILD_INDEX",
   "PI_SUBAGENT_INTERCOM_SESSION_NAME",
+  "AGENT_INTERCOM_SESSION_ID",
+  "AGENT_INTERCOM_SESSION_NAME",
+  "AGENT_INTERCOM_WORKER_ID",
+  "AGENT_INTERCOM_RUN_ID",
+  "AGENT_INTERCOM_MANAGER_TARGET",
+  "AGENT_INTERCOM_MANAGER_SESSION_ID",
+  "AGENT_INTERCOM_TEAM_MANIFEST",
+  "AGENT_INTERCOM_SCOPE_ID",
+  "AGENT_INTERCOM_ROLE",
+  "AGENT_INTERCOM_OWNED",
 ] as const;
+const childEnvKeys = identityEnvKeys;
 const bossEnvKeys = [
   "AGENT_INTERCOM_BOSS_RUN_ID",
   "AGENT_INTERCOM_BOSS_ROLE",
@@ -44,11 +55,13 @@ const previousHome = process.env.HOME;
 const previousUserProfile = process.env.USERPROFILE;
 const previousLegacyTool = process.env.PI_INTERCOM_LEGACY_TOOL;
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+const previousIdentityEnv = new Map(identityEnvKeys.map((key) => [key, process.env[key]]));
 const previousBossEnv = new Map(bossEnvKeys.map((key) => [key, process.env[key]]));
 process.env.HOME = sharedHomeDir;
 process.env.USERPROFILE = sharedHomeDir;
 process.env.PI_INTERCOM_LEGACY_TOOL = "1";
 delete process.env.PI_CODING_AGENT_DIR;
+for (const key of identityEnvKeys) delete process.env[key];
 for (const key of bossEnvKeys) delete process.env[key];
 const { IntercomClient } = await import("./broker/client.ts");
 const { chooseContactTarget, formatContactInstruction, isEmptyRpcBootstrapSession } = await import("./index.ts");
@@ -59,6 +72,11 @@ process.on("exit", () => {
   else process.env.PI_INTERCOM_LEGACY_TOOL = previousLegacyTool;
   if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
   else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+  for (const key of identityEnvKeys) {
+    const value = previousIdentityEnv.get(key);
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
   for (const key of bossEnvKeys) {
     const value = previousBossEnv.get(key);
     if (value === undefined) delete process.env[key];

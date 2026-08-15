@@ -487,17 +487,50 @@ function parseSubagentIntercomPayload(payload: unknown): { to: string; message: 
   const requestId = typeof record.requestId === "string" ? record.requestId : undefined;
   return { to: record.to, message: record.message, ...(requestId ? { requestId } : {}) };
 }
-function resolveIntercomPresenceName(sessionName: string | undefined, sessionId: string): string {
+
+const GENERIC_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+
+export function resolveIntercomSessionId(
+  fallbackSessionId: string,
+  environment: NodeJS.ProcessEnv = process.env,
+): string {
+  const harnessSessionId = environment[INTERCOM_SESSION_ID_ENV]?.trim();
+  if (harnessSessionId) {
+    return harnessSessionId;
+  }
+  const genericSessionId = environment.AGENT_INTERCOM_SESSION_ID?.trim();
+  if (genericSessionId) {
+    if (!GENERIC_SESSION_ID_PATTERN.test(genericSessionId)) {
+      throw new Error("Invalid AGENT_INTERCOM_SESSION_ID: must match ^[A-Za-z0-9_-]{1,128}$");
+    }
+    return genericSessionId;
+  }
+  return fallbackSessionId;
+}
+
+export function resolveIntercomPresenceName(
+  sessionName: string | undefined,
+  sessionId: string,
+  environment: NodeJS.ProcessEnv = process.env,
+): string {
   const trimmedName = sessionName?.trim();
   if (trimmedName) {
     return trimmedName;
   }
+  const subagentName = environment[SUBAGENT_INTERCOM_SESSION_NAME_ENV]?.trim();
+  if (subagentName) {
+    return subagentName;
+  }
+  const genericName = environment.AGENT_INTERCOM_SESSION_NAME?.trim();
+  if (genericName) {
+    return genericName;
+  }
   const normalizedSessionId = sessionId.startsWith("session-") ? sessionId.slice("session-".length) : sessionId;
   return `${DEFAULT_UNNAMED_SESSION_ALIAS_PREFIX}-${normalizedSessionId.slice(0, 8)}`;
 }
-function buildPresenceIdentity(pi: ExtensionAPI, sessionId: string): { name: string } {
+function buildPresenceIdentity(pi: ExtensionAPI, sessionId: string, environment: NodeJS.ProcessEnv = process.env): { name: string } {
   return {
-    name: resolveIntercomPresenceName(pi.getSessionName(), sessionId),
+    name: resolveIntercomPresenceName(pi.getSessionName(), sessionId, environment),
   };
 }
 function formatSessionLabel(session: SessionInfo, duplicates: Set<string>, idPrefix: string): string {
@@ -623,6 +656,14 @@ function getNamePollMs(): number {
 }
 export default function piIntercomExtension(pi: ExtensionAPI) {
   const runtimeScopeId = intercomScopeIdFromEnvForRegistration();
+  const initialHarnessSessionId = process.env[INTERCOM_SESSION_ID_ENV]?.trim();
+  const initialGenericSessionId = process.env.AGENT_INTERCOM_SESSION_ID?.trim();
+  if (initialGenericSessionId && !initialHarnessSessionId) {
+    if (!GENERIC_SESSION_ID_PATTERN.test(initialGenericSessionId)) {
+      throw new Error("Invalid AGENT_INTERCOM_SESSION_ID: must match ^[A-Za-z0-9_-]{1,128}$");
+    }
+  }
+  const configuredSessionId = initialHarnessSessionId || initialGenericSessionId;
   let client: IntercomClient | null = null;
   const config: IntercomConfig = loadConfig();
   const bossTeamScope = readBossTeamScope();
@@ -739,8 +780,11 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       return null;
     }
     try {
-      if (currentSessionId && ctx.sessionManager.getSessionId() !== currentSessionId) {
-        return null;
+      if (currentSessionId) {
+        const expectedSessionId = configuredSessionId || ctx.sessionManager.getSessionId();
+        if (expectedSessionId !== currentSessionId) {
+          return null;
+        }
       }
       void ctx.hasUI;
       return ctx;
@@ -789,11 +833,12 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       ...(runtimeInstanceId ? { runtimeInstanceId } : {}),
     };
   }
-  function syncPresenceIdentity(sessionId: string): void {
+  function syncPresenceIdentity(sessionId?: string): void {
     if (!client || !getLiveContext()) {
       return;
     }
-    const identity = buildPresenceIdentity(pi, sessionId);
+    const resolvedId = currentSessionId ?? (configuredSessionId || (sessionId ? sessionId : "default"));
+    const identity = buildPresenceIdentity(pi, resolvedId);
     lastPresenceName = identity.name;
     client.updatePresence({ ...identity, status: currentStatus() });
   }
@@ -1343,7 +1388,8 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     rejectAllReplyWaiters(new Error("Session replaced"));
     replyTracker.reset();
     runtimeContext = ctx;
-    currentSessionId = ctx.sessionManager.getSessionId();
+    currentSessionId = configuredSessionId || ctx.sessionManager.getSessionId();
+    publishIntercomSessionId(currentSessionId);
     if (bossTeamScope.present && bossSelfSessionError(bossTeamScope, currentSessionId)) {
       const staleOutbox = new PersistentOutboundOutbox(currentSessionId);
       const removed = staleOutbox.list().length;
@@ -1666,7 +1712,8 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     scheduleInboundFlush(0);
   });
   pi.on("turn_start", (_event, ctx) => {
-    const sessionId = ctx.sessionManager.getSessionId();
+    const rawSessionId = ctx.sessionManager.getSessionId();
+    const sessionId = configuredSessionId || rawSessionId;
     if (!currentSessionId || sessionId !== currentSessionId) {
       if (!config.enabled) {
         return;
@@ -1688,7 +1735,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     currentModel = event.model.id;
     if (client) {
       client.updatePresence({
-        ...buildPresenceIdentity(pi, ctx.sessionManager.getSessionId()),
+        ...buildPresenceIdentity(pi, currentSessionId ?? (configuredSessionId || ctx.sessionManager.getSessionId())),
         model: event.model.id,
         status: currentStatus(),
       });
