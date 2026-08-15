@@ -66,7 +66,7 @@ test("packed runtime installs the exact Core build without an SSH dependency", (
   );
   assert.equal(
     coreEntry.integrity,
-    "sha512-eWFpUm/yyT3jyvj/1g/MbjbdoZmn5FgzJFJ3HpO7nkvTkeJRRue+t7amQ8DeVw6QAe6/b55b2twqGuIi4ualDg==",
+    "sha512-bpifL9cc8cwMm74fpvjgRBarXMwn6BY4cST4ry6HrGtfpRTXyiJOtwfNnhORF6xTKwQNOWakxS1sZALczInvkQ==",
   );
   assert.equal(lock.includes("git+ssh://git@github.com/ctliz/agent-intercom-core"), false);
   assert.equal(lock.includes(`git+ssh://git@github.com/${"dataforxyz"}/agent-intercom-core`), false);
