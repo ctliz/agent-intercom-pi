@@ -7,7 +7,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { IntercomClient, type SendResult } from "./broker/client.ts";
 import { parseBossControl } from "./broker/boss-adapter.ts";
 import { spawnBrokerIfNeeded } from "./broker/spawn.ts";
-import { intercomScopeIdFromEnvForRegistration } from "./protocol-v4/contract.ts";
+import { INTERCOM_SCOPE_ENV, intercomScopeIdFromEnvForRegistration } from "./protocol-v4/contract.ts";
 import { SessionListOverlay } from "./ui/session-list.ts";
 import { ComposeOverlay, type ComposeResult } from "./ui/compose.ts";
 import { InlineMessageComponent } from "./ui/inline-message.ts";
@@ -19,6 +19,19 @@ import { pendingAskId, ReplyTracker, type IntercomContext } from "./reply-tracke
 import { InboundMessageConflictError, PersistentInboundInbox, readPendingAsksSnapshot, type StoredInboundMessage } from "./inbound-inbox.ts";
 import { PersistentOutboundOutbox } from "./outbound-outbox.ts";
 import { formatIntercomTeam, resolveBossIntercomTeam, resolveIntercomTeam, resolveManagedInboxSession } from "./team.ts";
+import {
+  classifyMembership,
+  currentTmuxWorkspace,
+  formatJoinStatus,
+  formatJoinSuccess,
+  formatJoinableWorkspaceList,
+  isZhLocale,
+  listScopedWorkspaces,
+  parseJoinArgs,
+  readSessionScope,
+  rejectManagedJoin,
+  workspaceNameForScope,
+} from "./workspace-join.ts";
 import { authorizeBossSender, BossTeamScopeError, bossSelfSessionError, filterBossSessions, isBossControllerReadinessControl, readBossTeamScope, resolveBossLiveTarget } from "./boss-team-scope.ts";
 import {
   INTERCOM_CONTROL_DELIVERY_EVENT,
@@ -655,7 +668,7 @@ function getNamePollMs(): number {
   return 1000;
 }
 export default function piIntercomExtension(pi: ExtensionAPI) {
-  const runtimeScopeId = intercomScopeIdFromEnvForRegistration();
+  let runtimeScopeId = intercomScopeIdFromEnvForRegistration();
   const initialHarnessSessionId = process.env[INTERCOM_SESSION_ID_ENV]?.trim();
   const initialGenericSessionId = process.env.AGENT_INTERCOM_SESSION_ID?.trim();
   if (initialGenericSessionId && !initialHarnessSessionId) {
@@ -859,6 +872,20 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   function publishIntercomSessionId(sessionId: string): void {
     process.env[INTERCOM_SESSION_ID_ENV] = sessionId;
   }
+  async function switchRuntimeScope(nextScopeId: string): Promise<void> {
+    if (runtimeScopeId === nextScopeId && process.env[INTERCOM_SCOPE_ENV] === nextScopeId) {
+      return;
+    }
+    runtimeScopeId = nextScopeId;
+    process.env[INTERCOM_SCOPE_ENV] = nextScopeId;
+    const previousClient = client;
+    client = null;
+    if (previousClient) {
+      await previousClient.disconnect(true).catch(() => undefined);
+    }
+    await ensureConnected("tool");
+  }
+
   function restoreIntercomSessionId(): void {
     if (previousIntercomSessionId === undefined) {
       delete process.env[INTERCOM_SESSION_ID_ENV];
@@ -2858,6 +2885,107 @@ Usage:
     handler: async (args, ctx) => {
       const mode = args.trim().toLowerCase();
       await showIntercomId(ctx, mode === "insert" || mode === "editor" ? "insert" : "copy");
+    },
+  });
+
+  pi.registerCommand("intercom-join", {
+    description: "Join an existing TmuxDeck workspace intercom circle. This does not enroll you as a Team Worker.",
+    handler: async (args, ctx) => {
+      const zh = isZhLocale();
+      const fail = (workspace?: string) => {
+        notifyIfLive(ctx, workspace
+          ? (zh
+            ? `无法加入工作区 ${workspace} 的通话圈。`
+            : `Could not join the intercom circle for workspace ${workspace}.`)
+          : (zh ? "无法加入该工作区通话圈。" : "Could not join that workspace intercom circle."), "error");
+      };
+      try {
+        const blocked = rejectManagedJoin(classifyMembership(), zh);
+        if (blocked) {
+          notifyIfLive(ctx, blocked, "error");
+          return;
+        }
+        const parsed = parseJoinArgs(args);
+        const workspaces = await listScopedWorkspaces();
+        let workspace: string | undefined;
+        if (parsed.kind === "list") {
+          notifyIfLive(ctx, formatJoinableWorkspaceList({ workspaces, zh }), "info");
+          return;
+        }
+        if (parsed.kind === "index" && parsed.index) {
+          const selected = workspaces[parsed.index - 1];
+          if (!selected) {
+            notifyIfLive(ctx, zh
+              ? "没有这个编号的工作区。"
+              : "No workspace uses that number.", "error");
+            return;
+          }
+          workspace = selected.sessionName;
+        } else if (parsed.kind === "workspace" && parsed.workspace) {
+          workspace = parsed.workspace;
+        } else if (parsed.kind === "scope" && parsed.scope) {
+          workspace = await workspaceNameForScope(parsed.scope);
+          if (!workspace) {
+            fail();
+            return;
+          }
+        }
+        if (!workspace) {
+          fail();
+          return;
+        }
+        const scope = await readSessionScope(workspace);
+        if (!scope) {
+          fail(workspace);
+          return;
+        }
+        if (!getLiveContext(ctx)) {
+          startSessionRuntime(ctx);
+        }
+        await switchRuntimeScope(scope);
+        syncPresenceIdentity(currentSessionId ?? ctx.sessionManager.getSessionId());
+        const displayName = currentSessionId
+          ? buildPresenceIdentity(pi, currentSessionId).name
+          : (pi.getSessionName()?.trim() || "unnamed");
+        notifyIfLive(ctx, formatJoinSuccess({
+          workspace,
+          name: displayName,
+          zh,
+        }), "info");
+      } catch (error) {
+        notifyIfLive(ctx, getErrorMessage(error), "error");
+      }
+    },
+  });
+
+  pi.registerCommand("intercom-status", {
+    description: "Show whether this session is standalone, same-scope, tmuxdeck-team, or orchestrator.",
+    handler: async (_args, ctx) => {
+      const zh = isZhLocale();
+      try {
+        const membership = classifyMembership();
+        const workspace = await currentTmuxWorkspace()
+          ?? (runtimeScopeId ? await workspaceNameForScope(runtimeScopeId) : undefined);
+        const displayName = currentSessionId
+          ? buildPresenceIdentity(pi, currentSessionId).name
+          : (pi.getSessionName()?.trim() || "unnamed");
+        let peers: string[] = [];
+        if (client?.isConnected()) {
+          const sessions = await client.listSessions();
+          peers = sessions
+            .filter((session) => session.id !== client?.sessionId && session.model !== "human")
+            .map((session) => session.name || session.id);
+        }
+        notifyIfLive(ctx, formatJoinStatus({
+          membership,
+          workspace,
+          name: displayName,
+          peers,
+          zh,
+        }), "info");
+      } catch (error) {
+        notifyIfLive(ctx, getErrorMessage(error), "error");
+      }
     },
   });
 

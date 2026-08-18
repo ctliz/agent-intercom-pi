@@ -4229,3 +4229,98 @@ test("async ask can be replied to later from the single pending ask fallback", {
     await cleanup();
   }
 });
+
+test("/intercom-join lists workspaces and re-registers as a same-scope collaborator", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const { tmuxRuntime } = await import("./workspace-join.ts");
+  const { planner, cleanup } = await setupClients();
+  const workspaceScope = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const previousTmux = tmuxRuntime.exec;
+  const previousLang = process.env.LANG;
+  const previousLcAll = process.env.LC_ALL;
+  const previousLcMessages = process.env.LC_MESSAGES;
+  const notices: string[] = [];
+  const harness = createExtensionHarness("guest", {
+    hasUI: true,
+    ui: {
+      notify: (message: string) => notices.push(message),
+    },
+  });
+  const scopedPeer = new IntercomClient({ scopeId: workspaceScope });
+  scopedPeer.on("message", (_from, _message, deliveryId: string) => {
+    scopedPeer.acknowledgeMessage(deliveryId);
+  });
+  const tmuxCalls: string[][] = [];
+
+  try {
+    process.env.LANG = "en_US.UTF-8";
+    delete process.env.LC_ALL;
+    delete process.env.LC_MESSAGES;
+    tmuxRuntime.exec = async (args) => {
+      tmuxCalls.push(args);
+      if (args[0] === "list-sessions") {
+        return { ok: true, stdout: "frontend\n" };
+      }
+      if (args[0] === "show-environment" && args[2] === "frontend") {
+        return { ok: true, stdout: `AGENT_INTERCOM_SCOPE_ID=${workspaceScope}\n` };
+      }
+      return { ok: false, stdout: "" };
+    };
+
+    await scopedPeer.connect({
+      name: "frontend-peer",
+      cwd: repoDir,
+      model: "test-model",
+      pid: process.pid,
+      startedAt: Date.now(),
+      lastActivity: Date.now(),
+    }, "frontend-peer-id");
+
+    piIntercomExtension(harness.pi as never);
+    await harness.emitLifecycle("session_start");
+    await waitForSessionByName(planner, "guest");
+
+    await harness.commands.get("intercom-join")!("", harness.ctx);
+    assert.match(notices.at(-1) ?? "", /Available TmuxDeck workspaces/);
+    assert.match(notices.at(-1) ?? "", /  1\) frontend/);
+    assert.doesNotMatch(notices.at(-1) ?? "", new RegExp(workspaceScope));
+    assert.equal((await planner.listSessions()).some((session) => session.name === "guest"), true);
+    assert.equal((await scopedPeer.listSessions()).some((session) => session.name === "guest"), false);
+
+    await harness.commands.get("intercom-join")!("frontend", harness.ctx);
+    assert.equal(
+      notices.at(-1),
+      "Joined the intercom circle for workspace frontend.\nRole: external collaborator (not a Team Worker)\nDisplay name: guest",
+    );
+    assert.doesNotMatch(notices.at(-1) ?? "", /joined a Team|tmuxdeck.team.v1|Worker enrollment/i);
+    assert.doesNotMatch(notices.at(-1) ?? "", new RegExp(workspaceScope));
+    assert.equal(process.env.AGENT_INTERCOM_SCOPE_ID, workspaceScope);
+    await waitForSessionByName(scopedPeer, "guest");
+    const unscopedAfterJoin = await planner.listSessions();
+    assert.equal(unscopedAfterJoin.some((session) => session.name === "guest"), false);
+
+    const showAfterJoin = tmuxCalls.filter((args) => args[0] === "show-environment" && args[2] === "frontend");
+    assert.ok(showAfterJoin.length >= 2);
+
+    await harness.commands.get("intercom-status")!("", harness.ctx);
+    const status = notices.at(-1) ?? "";
+    assert.match(status, /^same-scope\n/);
+    assert.match(status, /Workspace: frontend/);
+    assert.match(status, /Display name: guest/);
+    assert.match(status, /Visible in circle: frontend-peer/);
+    assert.doesNotMatch(status, new RegExp(workspaceScope));
+    assert.doesNotMatch(status, /已加入 Team/);
+  } finally {
+    tmuxRuntime.exec = previousTmux;
+    if (previousLang === undefined) delete process.env.LANG;
+    else process.env.LANG = previousLang;
+    if (previousLcAll === undefined) delete process.env.LC_ALL;
+    else process.env.LC_ALL = previousLcAll;
+    if (previousLcMessages === undefined) delete process.env.LC_MESSAGES;
+    else process.env.LC_MESSAGES = previousLcMessages;
+    delete process.env.AGENT_INTERCOM_SCOPE_ID;
+    await harness.emitLifecycle("session_shutdown");
+    await scopedPeer.disconnect().catch(() => undefined);
+    await cleanup();
+  }
+});

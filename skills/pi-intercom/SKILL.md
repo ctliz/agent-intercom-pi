@@ -397,6 +397,15 @@ Use `/name` so others can target you easily:
 /name planner
 ```
 
+To join an existing TmuxDeck workspace intercom circle without becoming a Team Worker:
+
+```
+/intercom-join frontend
+/intercom-status
+```
+
+`/intercom-join` with no argument lists available TmuxDeck workspaces. Joining is same-scope messaging only; it does not enroll you as a Team Worker.
+
 ## Error Handling
 
 ### Common Errors and Solutions

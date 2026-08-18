@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.0-connect.2 - 2026-08-18
+
+- Add `/intercom-join` and `/intercom-status` so a standalone Pi session can join an existing TmuxDeck workspace intercom circle without becoming a Team Worker.
+- Discover joinable workspaces from the current tmux server by session name and `AGENT_INTERCOM_SCOPE_ID` (48 lowercase hex). Listing never prints the raw scope.
+- Re-register on the selected workspace scope after join. Managed Team and Orchestrator sessions cannot join another circle.
+
 ## 0.11.0-connect.1 - 2026-08-14
 
 - Support Protocol v4 broker-enforced scope isolation (`AGENT_INTERCOM_SCOPE_ID`) and canonical `ctliz` distribution.

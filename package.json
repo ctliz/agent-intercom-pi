@@ -1,6 +1,6 @@
 {
   "name": "@ctliz/agent-intercom-pi",
-  "version": "0.12.0-connect.1",
+  "version": "0.12.0-connect.2",
   "license": "AGPL-3.0-or-later",
   "type": "module",
   "main": "index.ts",
