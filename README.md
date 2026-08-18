@@ -218,6 +218,139 @@ Sender identity in `intercom:control.from.id` comes from the broker delivery fra
 
 The control bus is intentionally not exposed as a model-facing generic Intercom tool. Companion extensions expose only their specific, reviewed actions.
 
+## Teams, names, and who can talk to whom
+
+A **team** in Agent Intercom is the small group a session should treat as coworkers. It is not the same as the machine-wide session list. Agents that belong to a team should start with `intercom_team({})` and only fall back to `intercom_list({})` when they need an independently launched peer.
+
+`/name` is how a human gives a session a stable, speakable handle. The broker still identifies every session by a stable session ID; the name is the convenient address other agents should use when it is unique.
+
+### Name a session with `/name`
+
+`/name` is a Pi host command, not an Intercom command. After you set it, Intercom republishes the new name so other connected sessions can target it.
+
+```text
+# Terminal 1
+/name planner
+
+# Terminal 2
+/name worker
+
+# Terminal 3
+/name reviewer
+```
+
+Good names are short, unique in the same scope, and describe the role: `planner`, `api-worker`, `frontend-dev`. Avoid spaces. If two live sessions share the same name, prefer the short ID shown by `intercom_list` or the exact full session ID from `/intercom-id`.
+
+Check the published name:
+
+```typescript
+intercom_status({})
+intercom_list({})
+```
+
+Copy a host-neutral contact snippet for another agent:
+
+```text
+/intercom-id
+```
+
+That snippet uses the unique name when possible and falls back to the stable session ID when names collide.
+
+If you never set `/name`, Intercom still exposes a runtime-only fallback alias such as `subagent-chat-1a2b3c4d` so peers can reach the session. That alias is not stored as the Pi session title.
+
+### How `intercom_team` chooses a team
+
+`intercom_team({})` has no arguments. It resolves the current group in this order and stops at the first match:
+
+1. **Orchestrator** — `~/.pi/agent/intercom/orchestrator/workers.json` has an owned record for this session (`AGENT_INTERCOM_WORKER_ID`) or this session is the current manager of live owned coworkers.
+2. **TmuxDeck manifest** — `AGENT_INTERCOM_TEAM_MANIFEST` points at a valid team file. The Lead is `leadId`; workers are the other members. An invalid or empty manifest fails closed and does not fall through to the live roster.
+3. **Same-scope live roster** — `AGENT_INTERCOM_SCOPE_ID` is set. Coworkers are the other live non-human sessions in that scope. `AGENT_INTERCOM_MANAGER_TARGET` / `AGENT_INTERCOM_MANAGER_SESSION_ID` name the Lead when present.
+4. **Standalone** — no manager and no coworkers. Use `/name` plus `intercom_list` / `intercom_send` instead.
+
+Typical result:
+
+```text
+Manager: planner [connected]
+You: worker
+Coworkers:
+- reviewer target=reviewer (pi, worker, running) [connected]
+```
+
+Use the returned `target` with `intercom_send` and `intercom_ask`. After Orchestrator adoption, the manager target updates without restarting the worker. `AGENT_INTERCOM_MANAGER_TARGET` is only a startup fallback.
+
+Only an Orchestrator manager may inspect another session's pending inbox, and only with an exact connected coworker `target` from `intercom_team`:
+
+```typescript
+intercom_team({})
+intercom_pending({ session: "tmuxdeck-11111111-2222-4333-8444-555555555555" })
+```
+
+Manifest, live-roster, and standalone teams cannot inspect another session's inbox.
+
+### Join a TmuxDeck circle without becoming a Team Worker
+
+`/intercom-join` puts a standalone Pi session into an existing TmuxDeck workspace intercom circle. It is same-scope messaging only. It does **not** write a team manifest, does **not** enroll you as a Team Worker, and does **not** grant inbox inspection.
+
+```text
+/intercom-join                 # list joinable workspaces
+/intercom-join frontend        # join by exact workspace name
+/intercom-join 1               # join by the listed number
+/intercom-join --scope <48hex> # join by the workspace scope
+/intercom-status               # confirm membership and visible peers
+```
+
+Managed Team Workers and Orchestrator-owned sessions cannot join another circle. Listing never prints the raw scope.
+
+### Example: two-person billing team
+
+Open two terminals in the same repo and start Pi in each.
+
+```text
+# Terminal 1 — the person holding the plan
+/name planner
+intercom_status({})
+
+# Terminal 2 — the person making the change
+/name worker
+intercom_list({})
+```
+
+`intercom_list` should now show both `planner` and `worker`. If these terminals were launched inside the same TmuxDeck workspace, `intercom_team` also returns that pair as a live roster. Otherwise they are standalone peers that address each other by `/name`.
+
+Planner assigns work:
+
+```typescript
+intercom_send({
+  to: "worker",
+  message: "Add idempotent refund retries in src/billing/refunds.ts. Ask before changing the public error shape."
+})
+```
+
+Worker asks a blocking question, then reports done with `send`:
+
+```typescript
+intercom_ask({
+  to: "planner",
+  message: "Refunds currently return 500 on a mid-flight timeout. Should I map that to 409 Conflict?"
+})
+// planner replies in the triggered turn:
+intercom_reply({ message: "Yes. Keep the existing error body; only change the status code." })
+
+intercom_send({
+  to: "planner",
+  message: "Done. Timeouts now return 409. Tests in refunds.test.ts pass."
+})
+```
+
+If a third Pi is already running as `reviewer` in the same TmuxDeck workspace, join from a new standalone window without becoming a Team Worker:
+
+```text
+/intercom-join billing
+/name reviewer
+intercom_team({})
+intercom_send({ to: "planner", message: "I can review the refund retry once worker is done." })
+```
+
 ## Workflow: Planner-Worker Coordination
 
 The most natural use of pi-intercom is splitting a task between two sessions — one holds the big picture, the other does the hands-on work. When the worker hits an ambiguity ("should I optimize for readability or performance here?"), they ask without losing context.

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Document `/name`, `intercom_team` resolution, `/intercom-join`, and a billing-team example in the README.
+
 ## 0.12.0-connect.2 - 2026-08-18
 
 - Add `/intercom-join` and `/intercom-status` so a standalone Pi session can join an existing TmuxDeck workspace intercom circle without becoming a Team Worker.
