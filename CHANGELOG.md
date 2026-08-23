@@ -2,7 +2,11 @@
 
 ## Unreleased
 
+## 0.12.0-connect.3 - 2026-08-23
+
 - Document `/name`, `intercom_team` resolution, `/intercom-join`, and a billing-team example in the README.
+- Explicitly disable shell execution for broker, tmux, and clipboard child processes.
+- Publish prerelease builds under their derived npm dist-tag instead of attempting to update `latest`.
 
 ## 0.12.0-connect.2 - 2026-08-18
 
