@@ -110,6 +110,7 @@ test("getBrokerSpawnOptions hides the broker console window on Windows", () => {
   assert.equal(options.detached, true);
   assert.equal(options.stdio, "ignore");
   assert.equal(options.cwd, "C:/repo");
+  assert.equal(options.shell, false);
 });
 
 test("getBrokerSpawnOptions keeps portable defaults on non-Windows platforms", () => {

@@ -99,7 +99,7 @@ export function parseTmuxEnvironmentStdout(stdout: string, varName = INTERCOM_SC
 
 export function defaultExecTmux(args: string[], env: NodeJS.ProcessEnv = process.env): Promise<{ ok: boolean; stdout: string }> {
   return new Promise((resolve) => {
-    execFile("tmux", args, { encoding: "utf8", timeout: 2000, env }, (error, stdout) => {
+    execFile("tmux", args, { encoding: "utf8", timeout: 2000, env, shell: false }, (error, stdout) => {
       if (error) {
         resolve({ ok: false, stdout: "" });
         return;

@@ -604,11 +604,11 @@ interface ClipboardCopyResult {
 }
 
 function runDetachedClipboardCommand(command: string, args: string[], text: string): ClipboardCopyResult {
-  const found = spawnSync("which", [command], { stdio: "ignore", timeout: 1000 });
+  const found = spawnSync("which", [command], { stdio: "ignore", timeout: 1000, shell: false });
   if (found.status !== 0) return { ok: false, error: `${command} not found` };
 
   try {
-    const proc = spawn(command, args, { stdio: ["pipe", "ignore", "ignore"] });
+    const proc = spawn(command, args, { stdio: ["pipe", "ignore", "ignore"], shell: false });
     proc.stdin.on("error", () => {
       // Ignore EPIPE if the clipboard helper exits early.
     });
@@ -629,6 +629,7 @@ function runClipboardCommand(command: string, args: string[], text: string): Cli
     encoding: "utf8",
     timeout: 2000,
     stdio: ["pipe", "ignore", "pipe"],
+    shell: false,
   });
   if (result.status === 0) return { ok: true, method: command };
   if (result.error) return { ok: false, error: result.error.message };
