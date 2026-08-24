@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.12.0-connect.4 - 2026-08-24
+
+- Add the npm-packaged Grok Build and AGY MCP adapters to the synchronized Agent Intercom family documentation.
+- Refresh Pi and Orchestrator install examples to current releases.
+
 ## 0.12.0-connect.3 - 2026-08-23
 
 - Document `/name`, `intercom_team` resolution, `/intercom-join`, and a billing-team example in the README.

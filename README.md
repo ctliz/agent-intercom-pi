@@ -4,7 +4,7 @@
 
 # Pi Intercom
 
-**Agent Intercom** is a cross-harness, same-machine messaging system for coding agents. Its Pi, Codex, Claude Code, and OpenCode adapters share one local broker and protocol, so sessions can discover and message each other regardless of which harness they run in.
+**Agent Intercom** is a cross-harness, same-machine messaging system for coding agents. Its Pi, Codex, Claude Code, OpenCode, Grok Build, and AGY adapters share one local broker and protocol, so sessions can discover and message each other regardless of which harness they run in.
 
 | Harness | Repository |
 |---|---|
@@ -13,7 +13,11 @@
 | Codex | [`agent-intercom-codex`](https://github.com/ctliz/agent-intercom-codex) |
 | Claude Code | [`agent-intercom-claude`](https://github.com/ctliz/agent-intercom-claude) |
 | OpenCode | [`agent-intercom-opencode`](https://github.com/ctliz/agent-intercom-opencode) |
+| Grok Build | [`agent-intercom-grok`](https://github.com/ctliz/agent-intercom-grok) |
+| AGY | [`agent-intercom-agy`](https://github.com/ctliz/agent-intercom-agy) |
 | Fleet lifecycle | [`agent-intercom-orchestrator`](https://github.com/ctliz/agent-intercom-orchestrator) |
+
+Grok Build and AGY use lightweight npm-packaged MCP launchers backed by the Claude MCP runtime. They retain inbound messages for `intercom_pending` polling but do not provide wake-on-message.
 
 ## Maintenance & Upstream Provenance
 
@@ -61,7 +65,7 @@ Each pi session that has `pi-intercom` loaded and enabled connects to a tiny loc
 ## Install
 
 ```bash
-pi install git:github.com/ctliz/agent-intercom-pi@v0.11.0-connect.2
+pi install git:github.com/ctliz/agent-intercom-pi@v0.12.0-connect.4
 ```
 
 If you are coming from `connect.1`, read [Upgrading from `connect.1`](#upgrading-from-connect1-to-connect2) first — the package namespace changed and the two versions must not be installed side by side.
@@ -71,7 +75,7 @@ Then restart Pi. The extension auto-connects to the broker on startup and regist
 On a supported Linux host (or WSL with a systemd user manager enabled) you can optionally install the orchestrator Pi plugin, which lets Pi create and safely own persistent Pi, Codex, Claude Code, and OpenCode coworkers. It is not required, and it is not available on macOS:
 
 ```bash
-pi install git:github.com/ctliz/agent-intercom-orchestrator@v0.11.0-connect.2
+pi install git:github.com/ctliz/agent-intercom-orchestrator@v0.12.0-connect.2
 ```
 
 Restart Pi or run `/reload`, then verify:
@@ -85,7 +89,7 @@ The orchestrator package adds the `agent_fleet` tool, `/agents*` commands, a sco
 
 Pi loads the Intercom extension directly, including its native **Alt+I** contact-copy shortcut, so no wrapper command or shell alias is required. You can still alias your usual Pi invocation for convenience, but unlike adapters that need a wrapper to add terminal behavior, an alias does not enable any additional pi-intercom features.
 
-Pi-intercom is also protocol-compatible with the companion Codex, Claude, and OpenCode adapters. They share the same local broker and runtime directory, so sessions from all four hosts appear in the same session list and can send, ask, reply, and recover messages across host boundaries. The first connected adapter can start the broker; Pi does not need to be launched first.
+Pi-intercom is also protocol-compatible with the companion Codex, Claude, OpenCode, Grok Build, and AGY adapters. They share the same local broker and runtime directory, so sessions from all six hosts appear in the same session list and can send, ask, reply, and recover messages across host boundaries. The first connected adapter can start the broker; Pi does not need to be launched first.
 
 **Recommended:** Add this snippet to your project's `AGENTS.md` to help agents understand when to coordinate across sessions:
 
@@ -109,7 +113,7 @@ A session becomes intercom-connected when all of these are true:
 
 The session list only shows intercom-connected sessions, not every open Pi process on the machine.
 
-If you upgrade pi-intercom or the orchestrator while sessions are already open, run `/reload` in each open Pi session (and restart any companion `coi`, `cci`, or OpenCode adapter). Update the packages by reinstalling the exact release tags with `pi install git:github.com/ctliz/agent-intercom-pi@v0.11.0-connect.2` and, only where Orchestrator is actually installed, `pi install git:github.com/ctliz/agent-intercom-orchestrator@v0.11.0-connect.2`. Extensions are loaded into the running host process, so an existing session cannot adopt new broker/discovery code until it reloads. This is especially important when upgrading from a release that allowed multiple broker processes to form separate session-list "islands": the broker ownership fix prevents new splits, but it cannot move clients that are still running the old code. After every host has reloaded once, they converge on the same broker automatically.
+If you upgrade pi-intercom or the orchestrator while sessions are already open, run `/reload` in each open Pi session (and restart any companion `coi`, `cci`, or OpenCode adapter). Update the packages by reinstalling the exact release tags with `pi install git:github.com/ctliz/agent-intercom-pi@v0.12.0-connect.4` and, only where Orchestrator is actually installed, `pi install git:github.com/ctliz/agent-intercom-orchestrator@v0.12.0-connect.2`. Extensions are loaded into the running host process, so an existing session cannot adopt new broker/discovery code until it reloads. This is especially important when upgrading from a release that allowed multiple broker processes to form separate session-list "islands": the broker ownership fix prevents new splits, but it cannot move clients that are still running the old code. After every host has reloaded once, they converge on the same broker automatically.
 
 If `/intercom` still reports no peers, first confirm the other Pi windows have pi-intercom loaded and have also been reloaded. Open Pi processes without the extension, disabled sessions, and sessions using a different `PI_CODING_AGENT_DIR` intentionally do not appear in the same list.
 
