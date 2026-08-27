@@ -1,6 +1,7 @@
 {
   "name": "@ctliz/agent-intercom-pi",
-  "version": "0.12.0-connect.7",
+  "version": "0.12.0-connect.8",
+  "description": "Pi coding-agent intercom for local messaging with Codex, Claude Code, OpenCode, Grok Build, and AGY agents.",
   "license": "AGPL-3.0-or-later",
   "type": "module",
   "main": "index.ts",
@@ -33,7 +34,15 @@
     "typecheck": "tsc --noEmit"
   },
   "keywords": [
-    "pi-package"
+    "pi-package",
+    "intercom",
+    "multi-agent",
+    "codex",
+    "claude",
+    "opencode",
+    "grok",
+    "grok-build",
+    "agy"
   ],
   "pi": {
     "extensions": [

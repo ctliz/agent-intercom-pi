@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.12.0-connect.8 - 2026-08-24
+
+- Document Grok Build and AGY support in detail on the npm package page, including packages, tools, identity, shared scope, Auto-Team participation, and polling-only delivery.
+- Add a complete npm description and Grok Build/AGY search metadata.
+
 ## 0.12.0-connect.7 - 2026-08-24
 
 - Synchronize Pi and Orchestrator install pins with the hosted-CI-validated Orchestrator release.
