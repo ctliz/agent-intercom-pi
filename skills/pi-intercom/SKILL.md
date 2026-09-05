@@ -78,6 +78,16 @@ Do not add artificial sleeps to form a batch. Each original message keeps its se
 
 ### Pattern 3: Find Your Manager or Team
 
+If no team exists yet, create one and have the other session join. This does not require tmux:
+
+```typescript
+intercom_join({ name: "billing", create: true })  // manager
+intercom_join({ name: "billing" })                 // other session
+intercom_team({})
+```
+
+`/intercom-create billing` and `/intercom-join billing` do the same from the command line. `intercom_join({})` lists named teams and TmuxDeck workspaces without printing raw scopes.
+
 Orchestrator-owned coworkers should use the no-argument team tool instead of searching the global peer list:
 
 ```typescript
@@ -210,7 +220,7 @@ intercom_reply({ askId: "ask-...", message: "Use the v2 API." })
 
 **Important:** Only sessions where `pi-subagents` supplied child bridge metadata
 get the `contact_supervisor` tool. Normal sessions use the split `intercom_send`,
-`intercom_ask`, `intercom_reply`, `intercom_team`, `intercom_list`, `intercom_pending`, and
+`intercom_ask`, `intercom_reply`, `intercom_team`, `intercom_join`, `intercom_list`, `intercom_pending`, and
 `intercom_status` tools. If you see the formatted supervisor decision/progress update message, treat
 it as a `contact_supervisor` escalation.
 
@@ -222,6 +232,7 @@ it as a `contact_supervisor` escalation.
 | `ask` | Waits up to 30 seconds, then continues asynchronously | You need an answer but should not hold the agent indefinitely |
 | `reply` | Responds to the active or pending inbound ask | You were asked something and need to answer naturally |
 | `pending` | Lists unresolved inbound asks | You need to see who is waiting before replying |
+| `join` | Lists, joins, or creates a named team | You need a team without tmux |
 | `list` | Returns all sessions with live status | You need to discover targets or choose an idle peer |
 | `status` | Returns your connection state | Troubleshooting |
 
@@ -397,14 +408,15 @@ Use `/name` so others can target you easily:
 /name planner
 ```
 
-To join an existing TmuxDeck workspace intercom circle without becoming a Team Worker:
+To form a team without tmux:
 
 ```
-/intercom-join frontend
+/intercom-create billing
+/intercom-join billing
 /intercom-status
 ```
 
-`/intercom-join` with no argument lists available TmuxDeck workspaces. Joining is same-scope messaging only; it does not enroll you as a Team Worker.
+Agents can use `intercom_join({ name: "billing", create: true })` or `intercom_join({ name: "billing" })`. `/intercom-join` with no argument lists named teams and TmuxDeck workspaces. Joining a TmuxDeck workspace is same-scope messaging only; it does not enroll you as a Team Worker.
 
 ## Error Handling
 

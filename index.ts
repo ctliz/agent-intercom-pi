@@ -24,7 +24,6 @@ import {
   currentTmuxWorkspace,
   formatJoinStatus,
   formatJoinSuccess,
-  formatJoinableWorkspaceList,
   isZhLocale,
   listScopedWorkspaces,
   parseJoinArgs,
@@ -32,6 +31,18 @@ import {
   rejectManagedJoin,
   workspaceNameForScope,
 } from "./workspace-join.ts";
+import {
+  buildJoinableCircles,
+  createNamedTeam,
+  findNamedTeamByScope,
+  formatCreateSuccess,
+  formatJoinableCircleList,
+  formatNamedJoinSuccess,
+  listNamedTeams,
+  parseCreateArgs,
+  parseTeamName,
+  resolveJoinCircle,
+} from "./named-teams.ts";
 import { authorizeBossSender, BossTeamScopeError, bossSelfSessionError, filterBossSessions, isBossControllerReadinessControl, readBossTeamScope, resolveBossLiveTarget } from "./boss-team-scope.ts";
 import {
   INTERCOM_CONTROL_DELIVERY_EVENT,
@@ -885,6 +896,76 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       await previousClient.disconnect(true).catch(() => undefined);
     }
     await ensureConnected("tool");
+  }
+  function currentDisplayName(): string {
+    return currentSessionId
+      ? buildPresenceIdentity(pi, currentSessionId).name
+      : (pi.getSessionName()?.trim() || "unnamed");
+  }
+  function rejectCircleChange(): string | undefined {
+    if (bossTeamScope.present) {
+      return isZhLocale()
+        ? "Boss 团队模式下不能创建或加入其他团队。"
+        : "Boss team-only mode cannot create or join another team.";
+    }
+    return rejectManagedJoin(classifyMembership(), isZhLocale());
+  }
+  async function applyCircleScope(ctx: ExtensionContext, scopeId: string, managerSessionId?: string): Promise<void> {
+    if (managerSessionId) {
+      process.env.AGENT_INTERCOM_MANAGER_TARGET = managerSessionId;
+    } else {
+      delete process.env.AGENT_INTERCOM_MANAGER_TARGET;
+    }
+    if (!getLiveContext(ctx)) {
+      startSessionRuntime(ctx);
+    }
+    await switchRuntimeScope(scopeId);
+    syncPresenceIdentity(currentSessionId ?? ctx.sessionManager.getSessionId());
+  }
+  async function createAndJoinNamedTeam(ctx: ExtensionContext, name: string): Promise<string> {
+    const blocked = rejectCircleChange();
+    if (blocked) throw new Error(blocked);
+    const teamName = parseTeamName(name);
+    if (!getLiveContext(ctx)) {
+      startSessionRuntime(ctx);
+    }
+    const managerSessionId = currentSessionId ?? ctx.sessionManager.getSessionId();
+    const team = createNamedTeam({ name: teamName, managerSessionId });
+    await applyCircleScope(ctx, team.scopeId, team.managerSessionId);
+    return formatCreateSuccess({ team: team.name, name: currentDisplayName(), zh: isZhLocale() });
+  }
+  async function listOrJoinCircle(ctx: ExtensionContext, args: string): Promise<string> {
+    const zh = isZhLocale();
+    const blocked = rejectCircleChange();
+    if (blocked) throw new Error(blocked);
+    const parsed = parseJoinArgs(args);
+    const namedTeams = listNamedTeams();
+    const workspaces = await listScopedWorkspaces();
+    const circles = buildJoinableCircles({ namedTeams, workspaces });
+    if (parsed.kind === "list") {
+      return formatJoinableCircleList({ circles, zh });
+    }
+    let selected = resolveJoinCircle({ parsed, namedTeams, workspaces });
+    if (!selected && parsed.kind === "workspace" && parsed.workspace) {
+      const scope = await readSessionScope(parsed.workspace);
+      if (scope) selected = { name: parsed.workspace, kind: "tmuxdeck", scopeId: scope };
+    }
+    if (!selected && parsed.kind === "scope" && parsed.scope) {
+      const workspace = await workspaceNameForScope(parsed.scope);
+      if (workspace) {
+        const scope = await readSessionScope(workspace);
+        if (scope) selected = { name: workspace, kind: "tmuxdeck", scopeId: scope };
+      }
+    }
+    if (!selected) {
+      throw new Error(parsed.kind === "index"
+        ? (zh ? "没有这个编号的团队。" : "No team uses that number.")
+        : (zh ? "无法加入该团队。" : "Could not join that team."));
+    }
+    await applyCircleScope(ctx, selected.scopeId, selected.managerSessionId);
+    return selected.kind === "named"
+      ? formatNamedJoinSuccess({ team: selected.name, name: currentDisplayName(), zh })
+      : formatJoinSuccess({ workspace: selected.name, name: currentDisplayName(), zh });
   }
 
   function restoreIntercomSessionId(): void {
@@ -1794,6 +1875,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     "intercom_pending",
     "intercom_status",
     "intercom_team",
+    "intercom_join",
     "contact_supervisor",
   ]);
 
@@ -2707,6 +2789,49 @@ Usage:
     },
   } as any);
 
+  pi.registerTool({
+    name: "intercom_join",
+    label: "Intercom Join",
+    description: "List, join, or create a named intercom team without tmux. Omit name to list joinable teams. Set create=true to create a team and join as manager.",
+    promptSnippet: "Join or create a named intercom team so intercom_team works without tmux.",
+    promptGuidelines: [
+      "Use intercom_join with no name to list named teams and TmuxDeck workspaces.",
+      "Use intercom_join({ name: \"billing\" }) to join an existing named team or workspace.",
+      "Use intercom_join({ name: \"billing\", create: true }) to create a named team and join as manager.",
+    ],
+    parameters: Type.Object({
+      name: Type.Optional(Type.String({ description: "Team name to join. Omit to list joinable teams." })),
+      create: Type.Optional(Type.Boolean({ description: "Create this named team and join as manager. Requires name." })),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      try {
+        const zh = isZhLocale();
+        if (params.create) {
+          if (typeof params.name !== "string" || !params.name.trim()) {
+            throw new Error(zh ? "创建团队需要名称。" : "Creating a team requires a name.");
+          }
+          const text = await createAndJoinNamedTeam(ctx, params.name);
+          return { content: [{ type: "text", text }] };
+        }
+        const text = await listOrJoinCircle(ctx, typeof params.name === "string" ? params.name : "");
+        return { content: [{ type: "text", text }] };
+      } catch (error) {
+        return { content: [{ type: "text", text: getErrorMessage(error) }], details: toolErrorDetails(error) };
+      }
+    },
+    renderCall(args, theme) {
+      const name = typeof args.name === "string" && args.name.trim() ? args.name.trim() : "";
+      const suffix = args.create === true ? (name ? ` create ${name}` : " create") : (name ? ` ${name}` : "");
+      return new Text(theme.fg("toolTitle", theme.bold(`intercom_join${suffix}`)), 0, 0);
+    },
+    renderResult(result, { isPartial }, theme, context) {
+      if (isPartial) return new Text(theme.fg("warning", "Joining team..."), 0, 0);
+      const details = result.details as { error?: boolean } | undefined;
+      const failed = Boolean(context.isError || details?.error === true);
+      return new Text(`${failed ? theme.fg("error", "✗ ") : theme.fg("success", "✓ ")}${theme.fg(failed ? "error" : "text", firstTextContent(result))}`, 0, 0);
+    },
+  } as any);
+
   for (const definition of [
     { name: "intercom_list", label: "Intercom List", action: "list", description: "List active local intercom sessions.", promptSnippet: "List active local intercom sessions." },
     { name: "intercom_pending", label: "Intercom Pending", action: "pending", description: "List unresolved inbound intercom asks with stable IDs, or retrieve one ask's full body. Managers may inspect an owned coworker's inbox. This does not list questions you sent to other sessions.", promptSnippet: "List unresolved inbound asks or retrieve one full ask by its stable ID." },
@@ -2889,70 +3014,23 @@ Usage:
     },
   });
 
-  pi.registerCommand("intercom-join", {
-    description: "Join an existing TmuxDeck workspace intercom circle. This does not enroll you as a Team Worker.",
+  pi.registerCommand("intercom-create", {
+    description: "Create a named intercom team and join it as manager. Does not require tmux.",
     handler: async (args, ctx) => {
-      const zh = isZhLocale();
-      const fail = (workspace?: string) => {
-        notifyIfLive(ctx, workspace
-          ? (zh
-            ? `无法加入工作区 ${workspace} 的通话圈。`
-            : `Could not join the intercom circle for workspace ${workspace}.`)
-          : (zh ? "无法加入该工作区通话圈。" : "Could not join that workspace intercom circle."), "error");
-      };
       try {
-        const blocked = rejectManagedJoin(classifyMembership(), zh);
-        if (blocked) {
-          notifyIfLive(ctx, blocked, "error");
-          return;
-        }
-        const parsed = parseJoinArgs(args);
-        const workspaces = await listScopedWorkspaces();
-        let workspace: string | undefined;
-        if (parsed.kind === "list") {
-          notifyIfLive(ctx, formatJoinableWorkspaceList({ workspaces, zh }), "info");
-          return;
-        }
-        if (parsed.kind === "index" && parsed.index) {
-          const selected = workspaces[parsed.index - 1];
-          if (!selected) {
-            notifyIfLive(ctx, zh
-              ? "没有这个编号的工作区。"
-              : "No workspace uses that number.", "error");
-            return;
-          }
-          workspace = selected.sessionName;
-        } else if (parsed.kind === "workspace" && parsed.workspace) {
-          workspace = parsed.workspace;
-        } else if (parsed.kind === "scope" && parsed.scope) {
-          workspace = await workspaceNameForScope(parsed.scope);
-          if (!workspace) {
-            fail();
-            return;
-          }
-        }
-        if (!workspace) {
-          fail();
-          return;
-        }
-        const scope = await readSessionScope(workspace);
-        if (!scope) {
-          fail(workspace);
-          return;
-        }
-        if (!getLiveContext(ctx)) {
-          startSessionRuntime(ctx);
-        }
-        await switchRuntimeScope(scope);
-        syncPresenceIdentity(currentSessionId ?? ctx.sessionManager.getSessionId());
-        const displayName = currentSessionId
-          ? buildPresenceIdentity(pi, currentSessionId).name
-          : (pi.getSessionName()?.trim() || "unnamed");
-        notifyIfLive(ctx, formatJoinSuccess({
-          workspace,
-          name: displayName,
-          zh,
-        }), "info");
+        const name = parseCreateArgs(args);
+        notifyIfLive(ctx, await createAndJoinNamedTeam(ctx, name), "info");
+      } catch (error) {
+        notifyIfLive(ctx, getErrorMessage(error), "error");
+      }
+    },
+  });
+
+  pi.registerCommand("intercom-join", {
+    description: "Join a named intercom team or an existing TmuxDeck workspace circle.",
+    handler: async (args, ctx) => {
+      try {
+        notifyIfLive(ctx, await listOrJoinCircle(ctx, args), "info");
       } catch (error) {
         notifyIfLive(ctx, getErrorMessage(error), "error");
       }
@@ -2965,11 +3043,11 @@ Usage:
       const zh = isZhLocale();
       try {
         const membership = classifyMembership();
-        const workspace = await currentTmuxWorkspace()
-          ?? (runtimeScopeId ? await workspaceNameForScope(runtimeScopeId) : undefined);
-        const displayName = currentSessionId
-          ? buildPresenceIdentity(pi, currentSessionId).name
-          : (pi.getSessionName()?.trim() || "unnamed");
+        const namedTeam = runtimeScopeId ? findNamedTeamByScope(runtimeScopeId) : undefined;
+        const workspace = namedTeam?.name
+          ? undefined
+          : await currentTmuxWorkspace()
+            ?? (runtimeScopeId ? await workspaceNameForScope(runtimeScopeId) : undefined);
         let peers: string[] = [];
         if (client?.isConnected()) {
           const sessions = await client.listSessions();
@@ -2980,7 +3058,8 @@ Usage:
         notifyIfLive(ctx, formatJoinStatus({
           membership,
           workspace,
-          name: displayName,
+          team: namedTeam?.name,
+          name: currentDisplayName(),
           peers,
           zh,
         }), "info");

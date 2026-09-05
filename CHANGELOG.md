@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.12.0-connect.9 - 2026-09-06
+
+- Add named teams that work without tmux: `/intercom-create`, `/intercom-join`, and the `intercom_join` tool can create or join a local team so `intercom_team` returns a live roster.
+- Keep TmuxDeck workspace join as an additional path. Listing named teams and workspaces never prints the raw scope.
+
 ## 0.12.0-connect.8 - 2026-08-24
 
 - Document Grok Build and AGY support in detail on the npm package page, including packages, tools, identity, shared scope, Auto-Team participation, and polling-only delivery.

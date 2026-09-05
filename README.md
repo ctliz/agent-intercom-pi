@@ -26,7 +26,7 @@ Grok Build and AGY are supported as first-class protocol peers through two dedic
 | Grok Build | [`@ctliz/agent-intercom-grok`](https://www.npmjs.com/package/@ctliz/agent-intercom-grok) | `agent-intercom-grok-mcp` |
 | AGY | [`@ctliz/agent-intercom-agy`](https://www.npmjs.com/package/@ctliz/agent-intercom-agy) | `agent-intercom-agy-mcp` |
 
-The host packages depend on `@ctliz/agent-intercom-claude` and load its MCP runtime internally. Users do **not** need to install or place `claude-intercom-mcp` on `PATH` separately. Once connected, Grok and AGY sessions share the same local broker and protocol as Pi, Codex, Claude Code, and OpenCode, and expose all nine MCP operations: `intercom_whoami`, `intercom_list`, `intercom_send`, `intercom_ask`, `intercom_reply`, `intercom_pending`, `intercom_status`, `intercom_team`, and `intercom_set_summary`.
+The host packages depend on `@ctliz/agent-intercom-claude` and load its MCP runtime internally. Users do **not** need to install or place `claude-intercom-mcp` on `PATH` separately. Once connected, Grok and AGY sessions share the same local broker and protocol as Pi, Codex, Claude Code, and OpenCode, and expose the MCP operations: `intercom_whoami`, `intercom_list`, `intercom_send`, `intercom_ask`, `intercom_reply`, `intercom_pending`, `intercom_status`, `intercom_team`, `intercom_join`, and `intercom_set_summary`.
 
 Install the host adapter before installing its plugin:
 
@@ -93,7 +93,7 @@ Each pi session that has `pi-intercom` loaded and enabled connects to a tiny loc
 ## Install
 
 ```bash
-pi install git:github.com/ctliz/agent-intercom-pi@v0.12.0-connect.8
+pi install git:github.com/ctliz/agent-intercom-pi@v0.12.0-connect.9
 ```
 
 If you are coming from `connect.1`, read [Upgrading from `connect.1`](#upgrading-from-connect1-to-connect2) first — the package namespace changed and the two versions must not be installed side by side.
@@ -141,7 +141,7 @@ A session becomes intercom-connected when all of these are true:
 
 The session list only shows intercom-connected sessions, not every open Pi process on the machine.
 
-If you upgrade pi-intercom or the orchestrator while sessions are already open, run `/reload` in each open Pi session (and restart any companion `coi`, `cci`, or OpenCode adapter). Update the packages by reinstalling the exact release tags with `pi install git:github.com/ctliz/agent-intercom-pi@v0.12.0-connect.8` and, only where Orchestrator is actually installed, `pi install git:github.com/ctliz/agent-intercom-orchestrator@v0.12.0-connect.5`. Extensions are loaded into the running host process, so an existing session cannot adopt new broker/discovery code until it reloads. This is especially important when upgrading from a release that allowed multiple broker processes to form separate session-list "islands": the broker ownership fix prevents new splits, but it cannot move clients that are still running the old code. After every host has reloaded once, they converge on the same broker automatically.
+If you upgrade pi-intercom or the orchestrator while sessions are already open, run `/reload` in each open Pi session (and restart any companion `coi`, `cci`, or OpenCode adapter). Update the packages by reinstalling the exact release tags with `pi install git:github.com/ctliz/agent-intercom-pi@v0.12.0-connect.9` and, only where Orchestrator is actually installed, `pi install git:github.com/ctliz/agent-intercom-orchestrator@v0.12.0-connect.5`. Extensions are loaded into the running host process, so an existing session cannot adopt new broker/discovery code until it reloads. This is especially important when upgrading from a release that allowed multiple broker processes to form separate session-list "islands": the broker ownership fix prevents new splits, but it cannot move clients that are still running the old code. After every host has reloaded once, they converge on the same broker automatically.
 
 If `/intercom` still reports no peers, first confirm the other Pi windows have pi-intercom loaded and have also been reloaded. Open Pi processes without the extension, disabled sessions, and sessions using a different `PI_CODING_AGENT_DIR` intentionally do not appear in the same list.
 
@@ -175,7 +175,7 @@ Press **Alt+I** or run `/intercom-id` to copy a short handoff snippet for the cu
 
 ### From the Agent
 
-The agent uses seven focused tools: `intercom_send`, `intercom_ask`, `intercom_reply`, `intercom_team`, `intercom_list`, `intercom_pending`, and `intercom_status`. Tool calls and results render as compact transcript rows so coordination is easy to scan. For common patterns like planner-worker delegation, the bundled `pi-intercom` skill provides copy-paste ready examples:
+The agent uses eight focused tools: `intercom_send`, `intercom_ask`, `intercom_reply`, `intercom_team`, `intercom_join`, `intercom_list`, `intercom_pending`, and `intercom_status`. Tool calls and results render as compact transcript rows so coordination is easy to scan. For common patterns like planner-worker delegation, the bundled `pi-intercom` skill provides copy-paste ready examples:
 
 ```typescript
 // Find the manager and managed coworkers without searching the global list
@@ -297,7 +297,7 @@ If you never set `/name`, Intercom still exposes a runtime-only fallback alias s
 1. **Orchestrator** — `~/.pi/agent/intercom/orchestrator/workers.json` has an owned record for this session (`AGENT_INTERCOM_WORKER_ID`) or this session is the current manager of live owned coworkers.
 2. **TmuxDeck manifest** — `AGENT_INTERCOM_TEAM_MANIFEST` points at a valid team file. The Lead is `leadId`; workers are the other members. An invalid or empty manifest fails closed and does not fall through to the live roster.
 3. **Same-scope live roster** — `AGENT_INTERCOM_SCOPE_ID` is set. Coworkers are the other live non-human sessions in that scope. `AGENT_INTERCOM_MANAGER_TARGET` / `AGENT_INTERCOM_MANAGER_SESSION_ID` name the Lead when present.
-4. **Standalone** — no manager and no coworkers. Use `/name` plus `intercom_list` / `intercom_send` instead.
+4. **Standalone** — no manager and no coworkers. Create a named team with `/intercom-create` or `intercom_join({ create: true })`, or use `/name` plus `intercom_list` / `intercom_send`.
 
 Typical result:
 
@@ -319,16 +319,32 @@ intercom_pending({ session: "tmuxdeck-11111111-2222-4333-8444-555555555555" })
 
 Manifest, live-roster, and standalone teams cannot inspect another session's inbox.
 
-### Join a TmuxDeck circle without becoming a Team Worker
+### Create or join a team without tmux
 
-`/intercom-join` puts a standalone Pi session into an existing TmuxDeck workspace intercom circle. It is same-scope messaging only. It does **not** write a team manifest, does **not** enroll you as a Team Worker, and does **not** grant inbox inspection.
+Named teams live in the local Intercom directory. Creating one generates a private scope, makes this session the manager, and is enough for `intercom_team` to return a live roster. Tmux and TmuxDeck are not required.
 
 ```text
-/intercom-join                 # list joinable workspaces
-/intercom-join frontend        # join by exact workspace name
+/intercom-create billing       # create a named team and join as manager
+/intercom-join billing         # join that named team from another session
+/intercom-join                 # list named teams and TmuxDeck workspaces
 /intercom-join 1               # join by the listed number
-/intercom-join --scope <48hex> # join by the workspace scope
 /intercom-status               # confirm membership and visible peers
+intercom_team({})
+```
+
+Agents can do the same without a slash command:
+
+```typescript
+intercom_join({ name: "billing", create: true })  // create and join as manager
+intercom_join({ name: "billing" })                 // join an existing named team
+intercom_join({})                                  // list joinable teams
+```
+
+`/intercom-join` can still attach a standalone Pi session to an existing TmuxDeck workspace circle. That path is same-scope messaging only. It does **not** write a team manifest, does **not** enroll you as a Team Worker, and does **not** grant inbox inspection.
+
+```text
+/intercom-join frontend        # join by exact TmuxDeck workspace name
+/intercom-join --scope <48hex> # join by the workspace scope
 ```
 
 Managed Team Workers and Orchestrator-owned sessions cannot join another circle. Listing never prints the raw scope.
@@ -347,7 +363,18 @@ intercom_status({})
 intercom_list({})
 ```
 
-`intercom_list` should now show both `planner` and `worker`. If these terminals were launched inside the same TmuxDeck workspace, `intercom_team` also returns that pair as a live roster. Otherwise they are standalone peers that address each other by `/name`.
+`intercom_list` should now show both `planner` and `worker`. They are still standalone until one session creates a named team:
+
+```text
+# Terminal 1
+/intercom-create billing
+
+# Terminal 2
+/intercom-join billing
+intercom_team({})
+```
+
+After that, `intercom_team` returns the pair as a live roster. If these terminals were launched inside the same TmuxDeck workspace, the live roster is already present without `/intercom-create`.
 
 Planner assigns work:
 
@@ -374,7 +401,7 @@ intercom_send({
 })
 ```
 
-If a third Pi is already running as `reviewer` in the same TmuxDeck workspace, join from a new standalone window without becoming a Team Worker:
+If a third Pi is already running as `reviewer`, join the named team from a new standalone window:
 
 ```text
 /intercom-join billing
@@ -578,6 +605,7 @@ The supervisor can reply with plain JSON or a fenced `json` block. If the reply 
 | `intercom_ask` | required `to`, required `message`, optional `attachments` | Ask and wait briefly for a reply |
 | `intercom_reply` | required `message`, optional `askId`, `to`, `which` | Reply to the active or pending inbound message; `askId` selects an exact unresolved ask, while `to`/`which` remain compatible selectors |
 | `intercom_team` | none | Show the current manager and live coworkers owned by that manager |
+| `intercom_join` | optional `name`, optional `create` | List, join, or create a named team without tmux |
 | `intercom_list` | none | List connected sessions in your scope |
 | `intercom_pending` | optional `askId`, `session` | List unresolved inbound asks with stable IDs; `askId` retrieves the full untruncated body, and managers may use `session` for an owned coworker |
 | `intercom_status` | none | Show connection and queue status |
@@ -603,6 +631,8 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 ### Tool behavior
 
 **`intercom_team`** reads orchestrator ownership dynamically and returns the current manager plus live same-manager coworkers. After adoption it follows the new manager without restarting the worker; `AGENT_INTERCOM_MANAGER_TARGET` is only a startup fallback.
+
+**`intercom_join`** lists named teams and TmuxDeck workspaces, joins one by name, or creates a named team with `create: true`. Creating a team does not require tmux. Listing never prints the raw scope.
 
 **`intercom_list`** returns the current session plus other active intercom-connected sessions with name, short ID, working directory, model, and live status. Under protocol v4 it is same-scope: it returns only sessions sharing your scope (or only unscoped sessions when you are unscoped). Cross-scope contact is possible only by exact full session ID. Orchestrator-owned workers should still prefer `intercom_team` for their group.
 

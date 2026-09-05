@@ -50,8 +50,8 @@ export function parseJoinArgs(raw: string): ParsedJoinArgs {
   }
   if (args.length !== 1 || args[0].startsWith("-")) {
     throw new Error(isZhLocale()
-      ? "用法：/intercom-join [工作区名或编号] 或 /intercom-join --scope <48 hex>"
-      : "Usage: /intercom-join [workspace or number] or /intercom-join --scope <48 hex>");
+      ? "用法：/intercom-join [团队名或编号] 或 /intercom-join --scope <48 hex>"
+      : "Usage: /intercom-join [team or number] or /intercom-join --scope <48 hex>");
   }
   if (/^[1-9]\d*$/.test(args[0])) {
     return { kind: "index", index: Number(args[0]) };
@@ -206,20 +206,24 @@ export function formatJoinSuccess(input: { workspace: string; name: string; zh: 
 export function formatJoinStatus(input: {
   membership: JoinMembership;
   workspace?: string;
+  team?: string;
   name: string;
   peers: string[];
   zh: boolean;
 }): string {
+  const circle = input.zh
+    ? (input.team ? `团队：${input.team}` : `工作区：${input.workspace || "无"}`)
+    : (input.team ? `Team: ${input.team}` : `Workspace: ${input.workspace || "none"}`);
   return input.zh
     ? [
       input.membership,
-      `工作区：${input.workspace || "无"}`,
+      circle,
       `显示名：${input.name}`,
       `同圈可见：${input.peers.length > 0 ? input.peers.join(", ") : "无"}`,
     ].join("\n")
     : [
       input.membership,
-      `Workspace: ${input.workspace || "none"}`,
+      circle,
       `Display name: ${input.name}`,
       `Visible in circle: ${input.peers.length > 0 ? input.peers.join(", ") : "none"}`,
     ].join("\n");

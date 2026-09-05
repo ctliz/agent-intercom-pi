@@ -1389,6 +1389,7 @@ test("split intercom tools are the default model-facing schema", { concurrency: 
       "intercom_ask",
       "intercom_reply",
       "intercom_team",
+      "intercom_join",
       "intercom_list",
       "intercom_pending",
       "intercom_status",
@@ -1990,7 +1991,7 @@ test("intercom tool result hook marks failed details as errors", async () => {
   const harness = createExtensionHarness();
   piIntercomExtension(harness.pi as never);
 
-  for (const toolName of ["intercom", "intercom_send", "intercom_ask", "intercom_reply", "intercom_team", "intercom_list", "intercom_pending", "intercom_status"]) {
+  for (const toolName of ["intercom", "intercom_send", "intercom_ask", "intercom_reply", "intercom_team", "intercom_join", "intercom_list", "intercom_pending", "intercom_status"]) {
     const errorResults = await harness.emitLifecycleResults("tool_result", {
       toolName,
       details: { error: true },
@@ -2845,6 +2846,7 @@ test("supervisor tool registers only when child metadata is present", async () =
       "intercom_ask",
       "intercom_reply",
       "intercom_team",
+      "intercom_join",
       "intercom_list",
       "intercom_pending",
       "intercom_status",
@@ -2867,6 +2869,7 @@ test("supervisor tool registers only when child metadata is present", async () =
       "intercom_ask",
       "intercom_reply",
       "intercom_team",
+      "intercom_join",
       "intercom_list",
       "intercom_pending",
       "intercom_status",
@@ -4256,6 +4259,7 @@ test("/intercom-join lists workspaces and re-registers as a same-scope collabora
     process.env.LANG = "en_US.UTF-8";
     delete process.env.LC_ALL;
     delete process.env.LC_MESSAGES;
+    rmSync(path.join(sharedHomeDir, ".pi", "agent", "intercom", "named-teams.json"), { force: true });
     tmuxRuntime.exec = async (args) => {
       tmuxCalls.push(args);
       if (args[0] === "list-sessions") {
@@ -4281,8 +4285,8 @@ test("/intercom-join lists workspaces and re-registers as a same-scope collabora
     await waitForSessionByName(planner, "guest");
 
     await harness.commands.get("intercom-join")!("", harness.ctx);
-    assert.match(notices.at(-1) ?? "", /Available TmuxDeck workspaces/);
-    assert.match(notices.at(-1) ?? "", /  1\) frontend/);
+    assert.match(notices.at(-1) ?? "", /Joinable intercom teams/);
+    assert.match(notices.at(-1) ?? "", /  1\) frontend \(TmuxDeck\)/);
     assert.doesNotMatch(notices.at(-1) ?? "", new RegExp(workspaceScope));
     assert.equal((await planner.listSessions()).some((session) => session.name === "guest"), true);
     assert.equal((await scopedPeer.listSessions()).some((session) => session.name === "guest"), false);
@@ -4321,6 +4325,119 @@ test("/intercom-join lists workspaces and re-registers as a same-scope collabora
     delete process.env.AGENT_INTERCOM_SCOPE_ID;
     await harness.emitLifecycle("session_shutdown");
     await scopedPeer.disconnect().catch(() => undefined);
+    await cleanup();
+  }
+});
+
+test("/intercom-create and intercom_join form a team without tmux", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const { listNamedTeams } = await import("./named-teams.ts");
+  const { planner, cleanup } = await setupClients();
+  const previousLang = process.env.LANG;
+  const previousLcAll = process.env.LC_ALL;
+  const previousLcMessages = process.env.LC_MESSAGES;
+  const previousManager = process.env.AGENT_INTERCOM_MANAGER_TARGET;
+  const notices: string[] = [];
+  const plannerSessionId = "named-team-planner-id";
+  const workerSessionId = "named-team-worker-id";
+  const plannerHarness = createExtensionHarness("named-planner", {
+    hasUI: true,
+    sessionId: plannerSessionId,
+    ui: { notify: (message: string) => notices.push(message) },
+  });
+  const workerHarness = createExtensionHarness("named-worker", {
+    hasUI: true,
+    sessionId: workerSessionId,
+    ui: { notify: (message: string) => notices.push(`worker:${message}`) },
+  });
+
+  try {
+    process.env.LANG = "en_US.UTF-8";
+    delete process.env.LC_ALL;
+    delete process.env.LC_MESSAGES;
+    delete process.env.AGENT_INTERCOM_SCOPE_ID;
+    delete process.env.AGENT_INTERCOM_MANAGER_TARGET;
+    delete process.env.PI_INTERCOM_SESSION_ID;
+    rmSync(path.join(sharedHomeDir, ".pi", "agent", "intercom", "named-teams.json"), { force: true });
+
+    piIntercomExtension(plannerHarness.pi as never);
+    piIntercomExtension(workerHarness.pi as never);
+    await plannerHarness.emitLifecycle("session_start");
+    await waitForSessionByName(planner, "named-planner");
+
+    await plannerHarness.commands.get("intercom-create")!("billing", plannerHarness.ctx);
+    assert.match(notices.at(-1) ?? "", /Created team billing and joined as manager/);
+    assert.doesNotMatch(notices.at(-1) ?? "", /scopeId|SCOPE_ID|[0-9a-f]{48}/);
+    const teams = listNamedTeams();
+    assert.equal(teams.length, 1);
+    assert.equal(teams[0]?.name, "billing");
+    assert.equal(teams[0]?.managerSessionId, plannerSessionId);
+    const teamScope = teams[0]!.scopeId;
+    assert.equal(process.env.AGENT_INTERCOM_SCOPE_ID, teamScope);
+    assert.equal(process.env.AGENT_INTERCOM_MANAGER_TARGET, plannerSessionId);
+
+    const joinTool = plannerHarness.tools.find((tool) => tool.name === "intercom_join")!;
+    const listed = await joinTool.execute("join-list", {}, new AbortController().signal, undefined, plannerHarness.ctx);
+    assert.match(listed.content[0]?.text ?? "", /  1\) billing/);
+    assert.doesNotMatch(listed.content[0]?.text ?? "", new RegExp(teamScope));
+
+    const teamTool = plannerHarness.tools.find((tool) => tool.name === "intercom_team")!;
+    const beforeWorker = await teamTool.execute("team-before-worker", {}, new AbortController().signal, undefined, plannerHarness.ctx);
+    assert.match(beforeWorker.content[0]?.text ?? "", /You: .* \[manager\]/);
+
+    const scopedPeer = new IntercomClient({ scopeId: teamScope });
+    scopedPeer.on("message", (_from, _message, deliveryId: string) => {
+      scopedPeer.acknowledgeMessage(deliveryId);
+    });
+    try {
+      await scopedPeer.connect({
+        name: "scope-checker",
+        cwd: repoDir,
+        model: "test-model",
+        pid: process.pid,
+        startedAt: Date.now(),
+        lastActivity: Date.now(),
+      }, "scope-checker-id");
+      await waitForSessionByName(scopedPeer, "named-planner");
+      assert.equal((await planner.listSessions()).some((session) => session.name === "named-planner"), false);
+
+      await workerHarness.emitLifecycle("session_start");
+      await waitForSessionByName(planner, "named-worker");
+      const workerJoin = workerHarness.tools.find((tool) => tool.name === "intercom_join")!;
+      const joined = await workerJoin.execute("join-billing", { name: "billing" }, new AbortController().signal, undefined, workerHarness.ctx);
+      assert.match(joined.content[0]?.text ?? "", /Joined team billing/);
+      assert.doesNotMatch(joined.content[0]?.text ?? "", new RegExp(teamScope));
+      assert.equal(process.env.AGENT_INTERCOM_SCOPE_ID, teamScope);
+      await waitForSessionByName(scopedPeer, "named-worker");
+      assert.equal((await planner.listSessions()).some((session) => session.name === "named-worker"), false);
+    } finally {
+      await scopedPeer.disconnect().catch(() => undefined);
+    }
+
+    const afterWorker = await teamTool.execute("team-after-worker", {}, new AbortController().signal, undefined, plannerHarness.ctx);
+    const afterText = afterWorker.content[0]?.text ?? "";
+    assert.match(afterText, /You: .* \[manager\]/);
+    assert.match(afterText, new RegExp(workerSessionId));
+    assert.doesNotMatch(afterText, new RegExp(teamScope));
+
+    await plannerHarness.commands.get("intercom-status")!("", plannerHarness.ctx);
+    const status = notices.at(-1) ?? "";
+    assert.match(status, /^same-scope\n/);
+    assert.match(status, /Team: billing/);
+    assert.doesNotMatch(status, new RegExp(teamScope));
+  } finally {
+    if (previousLang === undefined) delete process.env.LANG;
+    else process.env.LANG = previousLang;
+    if (previousLcAll === undefined) delete process.env.LC_ALL;
+    else process.env.LC_ALL = previousLcAll;
+    if (previousLcMessages === undefined) delete process.env.LC_MESSAGES;
+    else process.env.LC_MESSAGES = previousLcMessages;
+    if (previousManager === undefined) delete process.env.AGENT_INTERCOM_MANAGER_TARGET;
+    else process.env.AGENT_INTERCOM_MANAGER_TARGET = previousManager;
+    delete process.env.AGENT_INTERCOM_SCOPE_ID;
+    rmSync(path.join(sharedHomeDir, ".pi", "agent", "intercom", "named-teams.json"), { force: true });
+    await workerHarness.emitLifecycle("session_shutdown");
+    await plannerHarness.emitLifecycle("session_shutdown");
     await cleanup();
   }
 });
