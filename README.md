@@ -93,7 +93,7 @@ Each pi session that has `pi-intercom` loaded and enabled connects to a tiny loc
 ## Install
 
 ```bash
-pi install git:github.com/ctliz/agent-intercom-pi@v0.12.0-connect.9
+pi install git:github.com/ctliz/agent-intercom-pi@v0.12.2
 ```
 
 If you are coming from `connect.1`, read [Upgrading from `connect.1`](#upgrading-from-connect1-to-connect2) first — the package namespace changed and the two versions must not be installed side by side.
@@ -141,7 +141,7 @@ A session becomes intercom-connected when all of these are true:
 
 The session list only shows intercom-connected sessions, not every open Pi process on the machine.
 
-If you upgrade pi-intercom or the orchestrator while sessions are already open, run `/reload` in each open Pi session (and restart any companion `coi`, `cci`, or OpenCode adapter). Update the packages by reinstalling the exact release tags with `pi install git:github.com/ctliz/agent-intercom-pi@v0.12.0-connect.9` and, only where Orchestrator is actually installed, `pi install git:github.com/ctliz/agent-intercom-orchestrator@v0.12.0-connect.5`. Extensions are loaded into the running host process, so an existing session cannot adopt new broker/discovery code until it reloads. This is especially important when upgrading from a release that allowed multiple broker processes to form separate session-list "islands": the broker ownership fix prevents new splits, but it cannot move clients that are still running the old code. After every host has reloaded once, they converge on the same broker automatically.
+If you upgrade pi-intercom or the orchestrator while sessions are already open, run `/reload` in each open Pi session (and restart any companion `coi`, `cci`, or OpenCode adapter). Update the packages by reinstalling the exact release tags with `pi install git:github.com/ctliz/agent-intercom-pi@v0.12.2` and, only where Orchestrator is actually installed, `pi install git:github.com/ctliz/agent-intercom-orchestrator@v0.12.0-connect.5`. Extensions are loaded into the running host process, so an existing session cannot adopt new broker/discovery code until it reloads. This is especially important when upgrading from a release that allowed multiple broker processes to form separate session-list "islands": the broker ownership fix prevents new splits, but it cannot move clients that are still running the old code. After every host has reloaded once, they converge on the same broker automatically.
 
 If `/intercom` still reports no peers, first confirm the other Pi windows have pi-intercom loaded and have also been reloaded. Open Pi processes without the extension, disabled sessions, and sessions using a different `PI_CODING_AGENT_DIR` intentionally do not appear in the same list.
 

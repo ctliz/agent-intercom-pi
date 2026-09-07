@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.12.2 - 2026-09-06
+
+- Stable release of named teams without tmux. `/intercom-create`, `/intercom-join`, and `intercom_join` work outside TmuxDeck so `intercom_team` returns a live roster.
+
 ## 0.12.0-connect.9 - 2026-09-06
 
 - Add named teams that work without tmux: `/intercom-create`, `/intercom-join`, and the `intercom_join` tool can create or join a local team so `intercom_team` returns a live roster.
