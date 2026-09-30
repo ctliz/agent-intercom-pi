@@ -21,16 +21,19 @@ test("published package includes presentation assets and excludes tests", () => 
   assert.ok(paths.includes("inbound-inbox.ts"));
   assert.ok(paths.includes("outbound-outbox.ts"));
   assert.ok(paths.includes("durable-json.ts"));
+  assert.ok(paths.includes("tool-result.ts"));
+  assert.ok(paths.includes("cli-send.ts"));
+  assert.ok(paths.includes("bin/intercom-send.mjs"));
   assert.equal(paths.some(path => path.endsWith(".test.ts")), false);
 });
 
-test("protected provider is a packaged artifact, not an extension or executable", () => {
+test("protected provider is not an extension or executable; the CLI only sends messages", () => {
   const root = new URL("..", import.meta.url);
   const manifest = JSON.parse(readFileSync(new URL("package.json", root), "utf8")) as Record<string, any>;
   const extension = readFileSync(new URL("index.ts", root), "utf8");
 
   assert.deepEqual(manifest.pi?.extensions, ["./index.ts"]);
-  assert.equal(manifest.bin, undefined);
+  assert.deepEqual(manifest.bin, { "intercom-send": "./bin/intercom-send.mjs" });
   assert.doesNotMatch(extension, /provider\/provider\.mjs|protected-service/);
 });
 
@@ -58,6 +61,10 @@ test("packed runtime installs the exact Core build without an SSH dependency", (
   }
 
   const lockData = JSON.parse(lock) as { packages: Record<string, Record<string, unknown>> };
+  for (const name of ["pi-ai", "pi-coding-agent", "pi-tui"]) {
+    assert.equal(manifest.dependencies[`@earendil-works/${name}`], "^0.99.1");
+    assert.equal(lockData.packages[`node_modules/@earendil-works/${name}`].version, "0.99.1");
+  }
   const coreEntry = lockData.packages["node_modules/@ctliz/agent-intercom-core"];
   assert.ok(coreEntry, "Core package entry missing from lockfile");
   assert.equal(

@@ -1,4 +1,5 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { intercomOutputSchema, structuredIntercomResult } from "./tool-result.ts";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { randomUUID } from "crypto";
 import { spawn, spawnSync } from "child_process";
@@ -147,9 +148,8 @@ function toError(error: unknown): Error {
 }
 
 function toolErrorDetails(error: unknown): { error: true; code?: string } {
-  return error instanceof BossTeamScopeError
-    ? { error: true, code: error.code }
-    : { error: true };
+  const code = (error as { code?: unknown } | null)?.code;
+  return { error: true, ...(typeof code === "string" ? { code } : {}) };
 }
 
 class AskWaitElapsedError extends Error {
@@ -680,6 +680,15 @@ function getNamePollMs(): number {
   return 1000;
 }
 export default function piIntercomExtension(pi: ExtensionAPI) {
+  function registerIntercomTool(tool: ToolDefinition<any, any>): void {
+    pi.registerTool({
+      ...tool,
+      outputSchema: intercomOutputSchema,
+      async execute(...args) {
+        return structuredIntercomResult(await tool.execute(...args));
+      },
+    });
+  }
   let runtimeScopeId = intercomScopeIdFromEnvForRegistration();
   const initialHarnessSessionId = process.env[INTERCOM_SESSION_ID_ENV]?.trim();
   const initialGenericSessionId = process.env.AGENT_INTERCOM_SESSION_ID?.trim();
@@ -706,6 +715,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   let reconnectPromiseGeneration: number | null = null;
   let startupConnectTimer: NodeJS.Timeout | null = null;
   let reconnectAttempt = 0;
+  let registrationConflict: Error | null = null;
   let shuttingDown = false;
   let disposed = true;
   let runtimeStarted = false;
@@ -835,7 +845,8 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   }
   function currentStatus(): string {
     const activeToolName = activeTools.values().next().value;
-    const lifecycleStatus = activeToolName ? `tool:${activeToolName}` : agentRunning ? "thinking" : "idle";
+    const busy = agentRunning || getLiveContext()?.isIdle() === false;
+    const lifecycleStatus = activeToolName ? `tool:${activeToolName}` : busy ? "thinking" : "idle";
     const queueStatus = inboundInbox?.size ? ` · inbox:${inboundInbox.size}` : "";
     const outboxStatus = client?.outboxSize ? ` · outbox:${client.outboxSize}` : "";
     return config.status ? `${lifecycleStatus}${queueStatus}${outboxStatus} · ${config.status}` : `${lifecycleStatus}${queueStatus}${outboxStatus}`;
@@ -1079,11 +1090,16 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     inboundFlushTimer.unref?.();
   }
   function flushIdleMessages(generation = runtimeGeneration): void {
+    if (registrationConflict) return;
     if (!inboundInbox || inboundInbox.size === 0) {
       return;
     }
     const ctx = getLiveContext(runtimeContext, generation);
     if (!ctx) {
+      return;
+    }
+    if (!client?.isConnected()) {
+      scheduleInboundFlush(INBOUND_IDLE_RETRY_MS);
       return;
     }
 
@@ -1305,7 +1321,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     });
   }
   function scheduleReconnect(): void {
-    if (disposed || shuttingDown || reconnectTimer || reconnectPromise || !getLiveContext()) {
+    if (disposed || shuttingDown || registrationConflict || reconnectTimer || reconnectPromise || !getLiveContext()) {
       return;
     }
     const scheduledGeneration = runtimeGeneration;
@@ -1327,6 +1343,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     if (disposed || shuttingDown) {
       throw new Error("Intercom shutting down");
     }
+    if (registrationConflict) throw registrationConflict;
     if (bossTeamScope.present) {
       const selfError = currentSessionId ? bossSelfSessionError(bossTeamScope, currentSessionId) : "Boss session identity is unavailable";
       if (selfError) throw new BossTeamScopeError("BOSS_TEAM_METADATA_INVALID", selfError);
@@ -1359,19 +1376,24 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         }
         client = nextClient;
         reconnectAttempt = 0;
+        scheduleInboundFlush(0);
         return nextClient;
       } catch (error) {
         if (client === nextClient) {
           client = null;
         }
-        if (reason === "background" && getLiveContext(contextAtStart, generationAtStart)) {
-          scheduleReconnect();
+        if ((error as { code?: string })?.code === "SESSION_ID_IN_USE" && getLiveContext(contextAtStart, generationAtStart)) {
+          registrationConflict = toError(error);
+          clearReconnectTimer();
+          pi.appendEntry("intercom_registration_conflict", { sessionId: currentSessionId, code: "SESSION_ID_IN_USE", timestamp: Date.now() });
+          notifyIfLive(contextAtStart, "Intercom session is owned by another runtime. Switch to a different session, or release the duplicate owner and /reload. The existing owner was not changed.", "warning", generationAtStart);
         }
         throw toError(error);
       } finally {
         if (reconnectPromise === nextReconnectPromise) {
           reconnectPromise = null;
           reconnectPromiseGeneration = null;
+          if (reason === "background" && !client) scheduleReconnect();
         }
       }
     })();
@@ -1490,6 +1512,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     runtimeStarted = true;
     runtimeGeneration += 1;
     reconnectAttempt = 0;
+    registrationConflict = null;
     clearReconnectTimer();
     clearStartupConnectTimer();
     clearNamePollTimer();
@@ -1810,11 +1833,16 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     activeTools.delete(event.toolCallId);
     syncPresenceStatus();
   });
-  pi.on("agent_end", () => {
-    if (!getLiveContext()) {
-      return;
-    }
+  pi.on("agent_end", (_event, ctx) => {
+    if (!getLiveContext(ctx)) return;
     replyTracker.endTurn();
+    agentRunning = !ctx.isIdle();
+    activeTools.clear();
+    syncPresenceStatus();
+    scheduleInboundFlush(0);
+  });
+  pi.on("agent_settled", (_event, ctx) => {
+    if (!getLiveContext(ctx)) return;
     agentRunning = false;
     activeTools.clear();
     syncPresenceStatus();
@@ -1895,7 +1923,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
 
   const childOrchestratorMetadata = readChildOrchestratorMetadata();
   if (childOrchestratorMetadata) {
-    pi.registerTool({
+    registerIntercomTool({
       name: "contact_supervisor",
       label: "Contact Supervisor",
       description: "Subagent-only tool for contacting the supervisor agent that delegated this task. Use need_decision when blocked, uncertain, needing approval, or facing a product/API/scope decision before continuing; this waits up to 30 seconds, then continues asynchronously if unanswered. Use interview_request when multiple structured questions need supervisor answers; it has the same soft wait. Use progress_update only for meaningful progress or unexpected discoveries that change the plan; this does not wait for a reply. Do not use for routine completion handoffs.",
@@ -2219,6 +2247,12 @@ Usage:
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      if (params.action === "status" && registrationConflict) {
+        return {
+          content: [{ type: "text", text: `**Intercom Status:**\nConnected: No\nSession ID: ${currentSessionId}\nState: SESSION_ID_IN_USE\nAnother runtime owns this session; automatic reconnect is paused. Release the duplicate owner and /reload, or switch to a different session.` }],
+          details: { connected: false, sessionId: currentSessionId, code: "SESSION_ID_IN_USE", error: true },
+        };
+      }
       let connectedClient: IntercomClient;
       try {
         connectedClient = await ensureConnected("tool");
@@ -2272,7 +2306,7 @@ Usage:
 
             return {
               content: [{ type: "text", text: `${currentSection}\n\n${otherSection}` }],
-              details: {},
+              details: { sessionId: mySessionId, sessions },
             };
           } catch (error) {
             return {
@@ -2632,7 +2666,7 @@ Usage:
                 type: "text",
                 text: `**Intercom Status:**\nConnected: Yes\nSession ID: ${mySessionId}\nActive sessions: ${sessions.length}\nQueued inbound messages: ${inboundInbox?.size ?? 0}\nQueued outbound messages: ${connectedClient.outboxSize}\nPending inbound asks: ${replyTracker.listPending().length}`,
               }],
-              details: {},
+              details: { connected: true, sessionId: mySessionId, activeSessions: sessions.length, inboundMessages: inboundInbox?.size ?? 0, outboundMessages: connectedClient.outboxSize, pendingAsks: replyTracker.listPending().length },
             };
           } catch (error) {
             return {
@@ -2705,7 +2739,7 @@ Usage:
       legacyIntercomTool.renderCall({ ...args, action }, theme, context);
   const renderSplitResult = legacyIntercomTool.renderResult;
 
-  pi.registerTool({
+  registerIntercomTool({
     name: "intercom_send",
     label: "Intercom Send",
     description: "Send a message to another local Pi session. Both the recipient and message are required.",
@@ -2721,7 +2755,7 @@ Usage:
     renderResult: renderSplitResult,
   } as any);
 
-  pi.registerTool({
+  registerIntercomTool({
     name: "intercom_ask",
     label: "Intercom Ask",
     description: "Ask another local Pi session a blocking question, waiting briefly before continuing asynchronously. Do not use this for progress or status checkpoints.",
@@ -2737,7 +2771,7 @@ Usage:
     renderResult: renderSplitResult,
   } as any);
 
-  pi.registerTool({
+  registerIntercomTool({
     name: "intercom_reply",
     label: "Intercom Reply",
     description: "Reply to an inbound intercom message or ask. Exact protocol threading is resolved internally.",
@@ -2754,7 +2788,7 @@ Usage:
     renderResult: renderSplitResult,
   } as any);
 
-  pi.registerTool({
+  registerIntercomTool({
     name: "intercom_team",
     label: "Intercom Team",
     description: "Show your current manager and the live coworkers owned by that manager. No arguments are required.",
@@ -2789,8 +2823,9 @@ Usage:
     },
   } as any);
 
-  pi.registerTool({
+  registerIntercomTool({
     name: "intercom_join",
+    executionMode: "sequential",
     label: "Intercom Join",
     description: "List, join, or create a named intercom team without tmux. Omit name to list joinable teams. Set create=true to create a team and join as manager.",
     promptSnippet: "Join or create a named intercom team so intercom_team works without tmux.",
@@ -2838,7 +2873,7 @@ Usage:
     { name: "intercom_status", label: "Intercom Status", action: "status", description: "Show this session's intercom connection status.", promptSnippet: "Show intercom connection status." },
   ] as const) {
     if (definition.name === "intercom_list" && bossTeamScope.restricted) continue;
-    pi.registerTool({
+    registerIntercomTool({
       name: definition.name,
       label: definition.label,
       description: definition.description,
@@ -2856,7 +2891,7 @@ Usage:
   }
 
   if (config.legacyTool) {
-    pi.registerTool(legacyIntercomTool);
+    registerIntercomTool(legacyIntercomTool);
   }
 
   async function resolveCurrentContact(ctx: ExtensionContext, generation = runtimeGeneration): Promise<{ target: string; name?: string; id: string; duplicateName: boolean } | undefined> {

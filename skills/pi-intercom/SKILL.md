@@ -24,6 +24,19 @@ This skill covers how to handle those orchestrator-side escalations.
 - **Clarification loops**: Worker asks questions, planner answers, work continues
 - **Multi-session workflows**: Coordinate between specialized sessions (frontend/backend, research/implementation)
 
+## Codemode (Pi 0.99.1+)
+
+Active Intercom tools can be called from codemode as `await tools.intercom_send({...})`, `await tools.intercom_team({})`, and so on. Every result is `{ ok, text, data }`: check `ok`, then read structured delivery flags, session lists, team roster, or pending asks from `data`. Returned errors retain this object; invalid arguments, blocked calls, and thrown exceptions can still reject. Use `try/catch` or `Promise.allSettled()` for independent operations.
+
+```javascript
+const result = await tools.intercom_send({ to: "worker", message: "Tests passed." });
+return { ok: result.ok, delivered: result.data.delivered };
+```
+
+A deferred ask has `ok: true` and `data.pending: true`; it is not a failure. Do not proceed with dependent work until the actual answer arrives. Different recipients may be asked concurrently; never create a second unresolved ask to the same recipient. Delivery means durable queue acknowledgement, not task completion.
+
+For shell notifications, use `intercom-send <session-name-or-id> <message>`. It registers an independent send-only identity and prints JSON; it does not take over the current Pi session or track replies.
+
 ## Core Patterns
 
 ### Pattern 1: Planner-Worker Delegation
@@ -467,7 +480,7 @@ if (result.details?.pending) {
 
 ### Session name flips or registration reports `SESSION_ID_IN_USE`
 
-The same Pi session is open in more than one live runtime, such as a desktop terminal and a mobile/RPC host. Intercom keeps the first runtime authoritative instead of allowing the two clients to evict each other. Close or switch away from the duplicate runtime; one transcript/session ID must have only one live owner.
+The same Pi session is open in more than one live runtime, such as a desktop terminal and a mobile/RPC host. Intercom keeps the first runtime authoritative instead of allowing the two clients to evict each other. The conflicting runtime pauses automatic reconnect; `intercom_status` returns `ok: false` with `data.code: "SESSION_ID_IN_USE"`. Switch to a different session, or release the duplicate owner and `/reload`. One transcript/session ID must have only one live owner; do not auto-generate a replacement identity for a running session.
 
 ### Message not delivered
 

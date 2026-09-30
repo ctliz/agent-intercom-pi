@@ -358,6 +358,8 @@ function canonicalBossEnv(
 interface CapturedToolResult {
   content: Array<{ type: string; text: string }>;
   details?: Record<string, unknown>;
+  isError?: boolean;
+  structuredContent?: { ok: boolean; text: string; data: Record<string, unknown> };
 }
 
 interface RenderToolResult {
@@ -379,6 +381,7 @@ let harnessSessionSequence = 0;
 interface CapturedTool {
   name: string;
   parameters?: unknown;
+  outputSchema?: unknown;
   execute: (toolCallId: string, params: Record<string, unknown>, signal: AbortSignal, onUpdate: unknown, ctx: unknown) => Promise<CapturedToolResult>;
   renderCall?: (args: Record<string, unknown>, theme: RenderTheme, context: Record<string, unknown>) => RenderedComponent;
   renderResult?: (result: RenderToolResult, options: { expanded?: boolean; isPartial?: boolean }, theme: RenderTheme, context: Record<string, unknown>) => RenderedComponent;
@@ -2049,6 +2052,174 @@ test("contact supervisor tool renders reason and reply state", async () => {
   });
 });
 
+test("all intercom tools declare codemode output and preserve error data", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const { planner, cleanup } = await setupClients();
+  const harness = createExtensionHarness("codemode-worker");
+  try {
+    piIntercomExtension(harness.pi as never);
+    for (const tool of harness.tools) assert.ok(tool.outputSchema, `${tool.name} outputSchema`);
+    await harness.emitLifecycle("session_start");
+    await waitForSessionByName(planner, "codemode-worker");
+    const execute = (name: string, params: Record<string, unknown> = {}) => harness.tools.find((tool) => tool.name === name)!.execute("codemode-call", params, new AbortController().signal, undefined, harness.ctx);
+    const list = await execute("intercom_list");
+    assert.equal(list.structuredContent?.ok, true);
+    assert.ok((list.structuredContent?.data.sessions as SessionInfo[]).some((session) => session.name === "planner"));
+    const status = await execute("intercom_status");
+    assert.equal(status.structuredContent?.data.connected, true);
+    const missing = await execute("intercom_send", { to: "no-such-codemode-recipient", message: "test" });
+    assert.equal(missing.isError, true);
+    assert.equal(missing.structuredContent?.ok, false);
+    assert.equal(missing.structuredContent?.data.delivered, false);
+    const sent = await execute("intercom_send", { to: "planner", message: "codemode send" });
+    assert.equal(sent.structuredContent?.data.delivered, true);
+    assert.equal(sent.isError, false);
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
+    await cleanup();
+  }
+});
+
+test("Pi 0.99 codemode sandbox receives structured success and error results", { concurrency: false }, async () => {
+  const { createAgentSession, createCodemodeExtension, DefaultResourceLoader, SessionManager, SettingsManager } = await import("@earendil-works/pi-coding-agent");
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const { planner, cleanup } = await setupClients();
+  let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
+  try {
+    const loader = new DefaultResourceLoader({
+      cwd: repoDir,
+      agentDir: getAgentDirPath(),
+      noExtensions: true,
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+      extensionFactories: [piIntercomExtension, createCodemodeExtension({ mode: "on" })],
+    });
+    await loader.reload();
+    ({ session } = await createAgentSession({
+      cwd: repoDir,
+      agentDir: getAgentDirPath(),
+      resourceLoader: loader,
+      settingsManager: SettingsManager.inMemory({ defaultTools: ["+codemode"] }),
+      sessionManager: SessionManager.inMemory(repoDir),
+    }));
+    await session.bindExtensions({});
+    const code = `
+      const status = await tools.intercom_status({});
+      const failure = await tools.intercom_send({ to: "missing-sandbox-recipient", message: "test" });
+      const sent = await tools.intercom_send({ to: "planner", message: "real codemode sandbox" });
+      return { connected: status.data.connected, failure: failure.ok, delivered: sent.data.delivered };
+    `;
+    // Supply a synthetic assistant call, exercising real nested hooks and QuickJS without a paid model request.
+    session.sessionManager.appendMessage({
+      role: "assistant", api: "openai-responses", provider: "openai", model: "test-model", stopReason: "toolUse", timestamp: Date.now(),
+      content: [{ type: "toolCall", id: "sandbox-call", name: "codemode", arguments: { code } }],
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    });
+    session.refreshContext();
+    const tool = session.agent.state.tools.find((tool) => tool.name === "codemode")!;
+    assert.ok(tool, "codemode must be active");
+    const result = await tool.execute("sandbox-call", { code }, new AbortController().signal);
+    const text = result.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+    assert.match(text, /"connected":true/);
+    assert.match(text, /"failure":false/);
+    assert.match(text, /"delivered":true/);
+    assert.doesNotMatch(text, /Script failed/);
+  } finally {
+    if (session) {
+      await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+      session.dispose();
+    }
+    await cleanup();
+  }
+});
+
+test("registration conflicts pause reconnect without replacing the owner", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const { planner, cleanup } = await setupClients();
+  const owner = createAcknowledgingClient();
+  const sessionId = "extension-conflict-session";
+  const harness = createExtensionHarness("conflicting-worker", { sessionId });
+  try {
+    await owner.connect({ name: "conflict-owner", cwd: repoDir, model: "test-model", pid: 101, startedAt: 1001, lastActivity: Date.now(), runtimeInstanceId: "incumbent" }, sessionId);
+    piIntercomExtension(harness.pi as never);
+    await harness.emitLifecycle("session_start");
+    const deadline = Date.now() + 3000;
+    while (!harness.entries.some((entry) => entry.type === "intercom_registration_conflict") && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(harness.entries.filter((entry) => entry.type === "intercom_registration_conflict").length, 1);
+    const status = harness.tools.find((tool) => tool.name === "intercom_status")!;
+    const result = await status.execute("conflict-status", {}, new AbortController().signal, undefined, harness.ctx);
+    assert.equal(result.isError, true);
+    assert.equal(result.structuredContent?.data.code, "SESSION_ID_IN_USE");
+    assert.equal(result.structuredContent?.data.connected, false);
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    assert.equal(harness.entries.filter((entry) => entry.type === "intercom_registration_conflict").length, 1);
+    assert.equal((await waitForSessionId(planner, sessionId)).name, "conflict-owner");
+    assert.equal((await planner.send(sessionId, { text: "owner still reachable" })).delivered, true);
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
+    await owner.disconnect();
+    await cleanup();
+  }
+});
+
+test("CLI sends with an independent identity even inside an existing Pi session", { concurrency: false }, async () => {
+  const { planner, cleanup } = await setupClients();
+  try {
+    const received = once(planner, "message") as Promise<[SessionInfo, Message]>;
+    const child = spawn(process.execPath, [path.join(repoDir, "bin/intercom-send.mjs"), "planner", "CLI smoke message"], {
+      cwd: repoDir,
+      env: { ...process.env, PI_INTERCOM_SESSION_ID: planner.sessionId!, AGENT_INTERCOM_SESSION_ID: planner.sessionId! },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    const [code] = await once(child, "close");
+    assert.equal(code, 0, stderr || stdout);
+    const result = JSON.parse(stdout);
+    assert.equal(result.accepted, true);
+    assert.equal(result.delivered, true);
+    const [from, message] = await received;
+    assert.notEqual(from.id, planner.sessionId);
+    assert.match(from.name ?? "", /^intercom-cli-/);
+    assert.equal(message.content.text, "CLI smoke message");
+    assert.ok((await planner.listSessions()).some((session) => session.id === planner.sessionId));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("agent_end does not advertise idle while retries or compaction remain", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const { planner, cleanup } = await setupClients();
+  let idle = true;
+  const harness = createExtensionHarness("settlement-worker", { isIdle: () => idle });
+  try {
+    piIntercomExtension(harness.pi as never);
+    await harness.emitLifecycle("session_start");
+    const worker = await waitForSessionByName(planner, "settlement-worker");
+    idle = false;
+    await harness.emitLifecycle("agent_start");
+    await harness.emitLifecycle("agent_end");
+    await waitForSessionStatus(planner, "settlement-worker", "thinking");
+    await planner.send(worker.id, { text: "wait for full settlement" });
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    assert.equal(harness.sentMessages.length, 0);
+    idle = true;
+    await harness.emitLifecycle("agent_settled");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await waitForSessionStatus(planner, "settlement-worker", "idle");
+    assert.equal(harness.sentMessages.length, 1);
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
+    await cleanup();
+  }
+});
+
 test("sessions publish automatic lifecycle status", { concurrency: false }, async () => {
   const { default: piIntercomExtension } = await import("./index.ts");
   const { planner, cleanup } = await setupClients();
@@ -2756,6 +2927,7 @@ test("queued inbound messages recover after shutdown and reload", { concurrency:
   const { planner, cleanup } = await setupClients();
   let idle = false;
   const sessionId = "session-persistent-inbox-worker";
+  let resumedHarness: ReturnType<typeof createExtensionHarness> | undefined;
   const firstHarness = createExtensionHarness("persistent-inbox-worker", {
     hasUI: true,
     isIdle: () => idle,
@@ -2778,7 +2950,7 @@ test("queued inbound messages recover after shutdown and reload", { concurrency:
 
     await firstHarness.emitLifecycle("session_shutdown");
     idle = true;
-    const resumedHarness = createExtensionHarness("persistent-inbox-worker", {
+    resumedHarness = createExtensionHarness("persistent-inbox-worker", {
       hasUI: true,
       isIdle: () => idle,
       sessionId,
@@ -2789,8 +2961,9 @@ test("queued inbound messages recover after shutdown and reload", { concurrency:
 
     assert.equal(resumedHarness.sentMessages.length, 1);
     assert.match(resumedHarness.sentMessages[0]?.message.content ?? "", /This should deliver after reload/);
-    await resumedHarness.emitLifecycle("session_shutdown");
   } finally {
+    await firstHarness.emitLifecycle("session_shutdown");
+    await resumedHarness?.emitLifecycle("session_shutdown");
     await cleanup();
   }
 });

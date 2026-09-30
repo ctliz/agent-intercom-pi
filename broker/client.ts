@@ -376,7 +376,9 @@ export class IntercomClient extends EventEmitter {
       };
 
       const onReaderError = (error: Error) => {
-        const protocolError = new Error(`Intercom protocol error: ${error.message}`, { cause: error });
+        const protocolError = new Error(`Intercom protocol error: ${error.message}`, { cause: error }) as Error & { code?: string };
+        const code = (error as Error & { code?: string }).code;
+        if (code) protocolError.code = code;
         if (!connectionEstablished) {
           onError(protocolError);
           return;

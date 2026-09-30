@@ -17,6 +17,35 @@
 | AGY | [`agent-intercom-agy`](https://github.com/ctliz/agent-intercom-agy) |
 | Fleet lifecycle | [`agent-intercom-orchestrator`](https://github.com/ctliz/agent-intercom-orchestrator) |
 
+## Pi 0.99 and codemode
+
+Version 0.13.0 requires Pi 0.99.1 or newer in the 0.99 release line. It keeps the existing protocol v4 broker, durable queues, acknowledgements, and cross-harness routing unchanged.
+
+All Intercom tools remain directly callable and are also available through Pi's built-in codemode when active. Scripts receive `{ ok, text, data }` rather than a display string. `data` contains the tool's structured details: delivery flags and message ID, session lists, team roster, pending asks, or connection status. Returned failures set `isError: true` and retain structured data; a deferred ask is successful with `data.pending === true`. Always check `ok` before continuing with dependent actions. Blocked calls, invalid arguments, and thrown exceptions can still reject, so use `try/catch` or `Promise.allSettled()` when appropriate.
+
+```javascript
+const sessions = await tools.intercom_list({});
+if (!sessions.ok) throw new Error(sessions.text);
+const target = sessions.data.sessions.find(s => s.name === "worker");
+if (!target) throw new Error("Worker is offline");
+const result = await tools.intercom_send({ to: target.id, message: "Tests passed." });
+return { ok: result.ok, accepted: result.data.accepted, delivered: result.data.delivered };
+```
+
+Concurrent sends and independent asks are supported; do not create two unresolved asks to the same recipient. Team joins execute sequentially because they change the caller's routing scope. Receiving a delivery acknowledgement means the message is durably queued, not that the recipient finished its task. Busy sessions wait until `ctx.isIdle()`; `agent_settled` updates final idle status after automatic retries and compaction.
+
+### Send from a shell or release script
+
+The package includes an `intercom-send` executable. Install the alias globally for a shell command, or run it without relying on Pi's private installation path:
+
+```bash
+npm exec --yes --package=@ctliz/pi-intercom@0.13.0 -- intercom-send worker 'Tests passed.'
+```
+
+It prints one JSON result with `accepted`, `delivered`, `messageId`, and optional failure `code`/`reason`. Exit status is zero only for acknowledged delivery. It inherits the routing scope, but never inherits `PI_INTERCOM_SESSION_ID` or `AGENT_INTERCOM_SESSION_ID`: every invocation registers an independent sender, leaves running Pi sessions intact, and disconnects after sending. It is send-only; use the session tools for reply-tracked asks.
+
+When a second runtime claims the same stable session ID, Intercom reports `SESSION_ID_IN_USE`, pauses automatic reconnect, and preserves the original owner. Switch to a different session, or release the duplicate owner and `/reload`. `intercom_status` exposes the conflict as structured data rather than silently treating it as a temporary outage. Updating this adapter does not require restarting a compatible v4 broker.
+
 ## Grok Build and AGY support
 
 Grok Build and AGY are supported as first-class protocol peers through two dedicated npm packages:

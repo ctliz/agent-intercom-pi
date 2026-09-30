@@ -41,7 +41,10 @@ export function createMessageReader(
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      onError(new Error(`Failed to handle intercom message: ${message}`, { cause: error }));
+      const handlerError = new Error(`Failed to handle intercom message: ${message}`, { cause: error }) as Error & { code?: string };
+      const code = (error as { code?: unknown } | null)?.code;
+      if (typeof code === "string") handlerError.code = code;
+      onError(handlerError);
       return false;
     }
   }

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.13.0 - 2026-09-30
+
+- Update the Pi dependency and CI baseline to 0.99.1.
+- Add codemode output schemas and `{ ok, text, data }` results to every Intercom tool, including structured errors without losing model content or TUI details. Preserve parallel independent asks; serialize team joins.
+- Expose structured session lists and connection status for programmatic callers.
+- Preserve broker error codes through framing/client wrappers. Pause automatic reconnect on `SESSION_ID_IN_USE`, report the conflict, and keep the existing runtime authoritative. Gate inbox replay on successful registration.
+- Keep busy status through post-run retries and compaction; synchronize final idle status on `agent_settled`.
+- Fix background reconnect scheduling after a failed attempt.
+- Add the send-only `intercom-send` CLI with an independent sender identity and JSON delivery results, without opening or replacing a Pi runtime.
+- Verify structured success and failure through Pi's actual QuickJS codemode sandbox without making model API requests.
+- Publish the canonical package and Pi alias together from the release workflow. Protocol v4 remains unchanged.
+
 ## 0.12.2 - 2026-09-06
 
 - Stable release of named teams without tmux. `/intercom-create`, `/intercom-join`, and `intercom_join` work outside TmuxDeck so `intercom_team` returns a live roster.
