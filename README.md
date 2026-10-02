@@ -17,9 +17,11 @@
 | AGY | [`agent-intercom-agy`](https://github.com/ctliz/agent-intercom-agy) |
 | Fleet lifecycle | [`agent-intercom-orchestrator`](https://github.com/ctliz/agent-intercom-orchestrator) |
 
-## Pi 0.99 and codemode
+## Pi 1.0 compatibility and codemode
 
-Version 0.13.0 requires Pi 0.99.1 or newer in the 0.99 release line. It keeps the existing protocol v4 broker, durable queues, acknowledgements, and cross-harness routing unchanged.
+Version 0.14.0 is tested with Pi 1.0.0. The preceding 0.13.0 release was tested with Pi 0.99.1. The development test baseline now uses Pi 1.0.0; host-provided Pi modules remain peer dependencies, not runtime dependencies. The existing protocol v4 broker, durable queues, acknowledgements, and cross-harness routing are unchanged.
+
+Pi 1.0 defaults to fullscreen; set `tuiMode` to `"regular"` or launch with `--tui-mode regular` to retain terminal scrollback. Codemode's shorter declarations preserve Intercom's structured `{ ok, text, data }` results and team guidelines. To check tool existence in a script, use `"intercom_send" in tools`, not `typeof tools.intercom_send`, because unknown members now throw. Restart existing Pi processes to use a newly installed Pi version; `/reload` only reloads resources inside the running version.
 
 All Intercom tools remain directly callable and are also available through Pi's built-in codemode when active. Scripts receive `{ ok, text, data }` rather than a display string. `data` contains the tool's structured details: delivery flags and message ID, session lists, team roster, pending asks, or connection status. Returned failures set `isError: true` and retain structured data; a deferred ask is successful with `data.pending === true`. Always check `ok` before continuing with dependent actions. Blocked calls, invalid arguments, and thrown exceptions can still reject, so use `try/catch` or `Promise.allSettled()` when appropriate.
 
@@ -32,19 +34,58 @@ const result = await tools.intercom_send({ to: target.id, message: "Tests passed
 return { ok: result.ok, accepted: result.data.accepted, delivered: result.data.delivered };
 ```
 
-Concurrent sends and independent asks are supported; do not create two unresolved asks to the same recipient. Team joins execute sequentially because they change the caller's routing scope. Receiving a delivery acknowledgement means the message is durably queued, not that the recipient finished its task. Busy sessions wait until `ctx.isIdle()`; `agent_settled` updates final idle status after automatic retries and compaction.
+Concurrent sends and independent asks are supported; do not create two unresolved asks to the same recipient. Team joins execute sequentially; named task-team updates are also locked across independently launched Pi processes. Named joins append membership without changing the caller's broker routing scope. Receiving a delivery acknowledgement means the message is durably queued, not that the recipient finished its task. Busy sessions wait until `ctx.isIdle()`; `agent_settled` updates final idle status after automatic retries and compaction.
 
 ### Send from a shell or release script
 
 The package includes an `intercom-send` executable. Install the alias globally for a shell command, or run it without relying on Pi's private installation path:
 
 ```bash
-npm exec --yes --package=@ctliz/pi-intercom@0.13.0 -- intercom-send worker 'Tests passed.'
+npm exec --yes --package=@ctliz/pi-intercom@0.14.0 -- intercom-send worker 'Tests passed.'
 ```
 
 It prints one JSON result with `accepted`, `delivered`, `messageId`, and optional failure `code`/`reason`. Exit status is zero only for acknowledged delivery. It inherits the routing scope, but never inherits `PI_INTERCOM_SESSION_ID` or `AGENT_INTERCOM_SESSION_ID`: every invocation registers an independent sender, leaves running Pi sessions intact, and disconnects after sending. It is send-only; use the session tools for reply-tracked asks.
 
 When a second runtime claims the same stable session ID, Intercom reports `SESSION_ID_IN_USE`, pauses automatic reconnect, and preserves the original owner. Switch to a different session, or release the duplicate owner and `/reload`. `intercom_status` exposes the conflict as structured data rather than silently treating it as a temporary outage. Updating this adapter does not require restarting a compatible v4 broker.
+
+## Pi-local task teams
+
+Open Pi normally in separate terminals; no startup team, session name for the
+coordinator, or terminal multiplexer is required. When you ask an agent to work
+with `front` and `writer`, its tool guidelines tell it to ask once whether to form
+a team. After approval (or an explicit request to form a team), it discovers the
+sessions and creates the task group itself:
+
+```typescript
+intercom_join({ name: "launch", create: true, members: ["front", "writer"], work: "Build the product page" })
+intercom_send({ team: "launch", to: "front", message: "Implement the UI." })
+intercom_send({ team: "launch", to: "writer", message: "Write the copy." })
+intercom_team({})                     // all your task teams
+intercom_team({ team: "launch" })     // one team's manager and members
+```
+
+Joining another named team appends membership, never replaces it. The manager can
+append approved peers with `members`; any session can join itself. Missing or
+ambiguous targets fail before membership is written. Team updates are persistent
+and serialized across Pi processes. A different task can use a different team
+with the same participants.
+
+Every task message carries a public team name, displayed as `[Team: launch]`.
+When two sessions share multiple teams, sends/asks require `team`. Replies inherit
+the exact original message's team: use its receiver-local `contextId` reply hint,
+or an `askId` from `intercom_pending`. Mixed-team batches retain every message's
+label; ambiguous replies fail rather than guessing.
+
+This feature changes only Pi's named teams and prompt guidelines. It does not
+change the shared v4 broker or other adapters, does not add a security boundary,
+and does not isolate model history per team. Without a shared team, omitting
+`team` sends an ungrouped direct message even when either session belongs to
+unrelated teams, allowing initial contact before forming a team. Explicit team
+messages still require both sessions to be members; multiple shared teams still
+require selecting `team`. Consent is an agent instruction, not a broker-enforced approval record.
+Managed-team and workspace integration paths are unchanged. All participating Pi
+sessions need the 0.14.0 Pi adapter and `/reload`. This is not a cross-adapter
+protocol rollout.
 
 ## Grok Build and AGY support
 
@@ -122,7 +163,7 @@ Each pi session that has `pi-intercom` loaded and enabled connects to a tiny loc
 ## Install
 
 ```bash
-pi install git:github.com/ctliz/agent-intercom-pi@v0.12.2
+pi install npm:@ctliz/pi-intercom@0.14.0
 ```
 
 If you are coming from `connect.1`, read [Upgrading from `connect.1`](#upgrading-from-connect1-to-connect2) first — the package namespace changed and the two versions must not be installed side by side.
@@ -321,7 +362,7 @@ If you never set `/name`, Intercom still exposes a runtime-only fallback alias s
 
 ### How `intercom_team` chooses a team
 
-`intercom_team({})` has no arguments. It resolves the current group in this order and stops at the first match:
+With Pi-local task teams, `intercom_team({})` first shows all named teams containing this session; `intercom_team({ team: "billing" })` selects one. If there are no named task teams, the existing managed-team resolution below applies. Boss mode keeps its existing resolution and does not accept named task teams.
 
 1. **Orchestrator** — `~/.pi/agent/intercom/orchestrator/workers.json` has an owned record for this session (`AGENT_INTERCOM_WORKER_ID`) or this session is the current manager of live owned coworkers.
 2. **TmuxDeck manifest** — `AGENT_INTERCOM_TEAM_MANIFEST` points at a valid team file. The Lead is `leadId`; workers are the other members. An invalid or empty manifest fails closed and does not fall through to the live roster.
@@ -350,7 +391,7 @@ Manifest, live-roster, and standalone teams cannot inspect another session's inb
 
 ### Create or join a team without tmux
 
-Named teams live in the local Intercom directory. Creating one generates a private scope, makes this session the manager, and is enough for `intercom_team` to return a live roster. Tmux and TmuxDeck are not required.
+Named teams live in the local Intercom directory. Creating one makes this session the task-team manager and stores explicit member session IDs. Joining appends membership without switching broker scope or replacing previous memberships. Legacy records retain their manager; peers must join again to record their membership. Tmux and TmuxDeck are not required.
 
 ```text
 /intercom-create billing       # create a named team and join as manager
@@ -630,11 +671,11 @@ The supervisor can reply with plain JSON or a fenced `json` block. If the reply 
 
 | Tool | Parameters | Description |
 |------|------------|-------------|
-| `intercom_send` | required `to`, required `message`, optional `attachments` | Fire-and-forget delivery |
-| `intercom_ask` | required `to`, required `message`, optional `attachments` | Ask and wait briefly for a reply |
-| `intercom_reply` | required `message`, optional `askId`, `to`, `which` | Reply to the active or pending inbound message; `askId` selects an exact unresolved ask, while `to`/`which` remain compatible selectors |
-| `intercom_team` | none | Show the current manager and live coworkers owned by that manager |
-| `intercom_join` | optional `name`, optional `create` | List, join, or create a named team without tmux |
+| `intercom_send` | required `to`, `message`; optional `team`, `attachments` | Fire-and-forget delivery in a task team |
+| `intercom_ask` | required `to`, `message`; optional `team`, `attachments` | Ask and wait briefly for a reply |
+| `intercom_reply` | required `message`; optional `contextId`, `askId`, `team`, `to`, `which` | Select an exact inbound context and inherit its team |
+| `intercom_team` | optional `team` | Show your named task teams, or fall back to managed-team discovery |
+| `intercom_join` | optional `name`, `create`, `members`, `work` | Append membership; a manager can add connected peers, and `work` describes a newly created task |
 | `intercom_list` | none | List connected sessions in your scope |
 | `intercom_pending` | optional `askId`, `session` | List unresolved inbound asks with stable IDs; `askId` retrieves the full untruncated body, and managers may use `session` for an owned coworker |
 | `intercom_status` | none | Show connection and queue status |
@@ -659,7 +700,7 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 
 ### Tool behavior
 
-**`intercom_team`** reads orchestrator ownership dynamically and returns the current manager plus live same-manager coworkers. After adoption it follows the new manager without restarting the worker; `AGENT_INTERCOM_MANAGER_TARGET` is only a startup fallback.
+**`intercom_team`** first shows your named Pi task teams. Without named memberships it reads orchestrator ownership dynamically and returns the current manager plus live same-manager coworkers. After adoption it follows the new manager without restarting the worker; `AGENT_INTERCOM_MANAGER_TARGET` is only a startup fallback.
 
 **`intercom_join`** lists named teams and TmuxDeck workspaces, joins one by name, or creates a named team with `create: true`. Creating a team does not require tmux. Listing never prints the raw scope.
 
@@ -669,7 +710,7 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 
 **`intercom_ask`** waits up to 30 seconds for a prompt reply, then returns a successful pending result while keeping the request open for a late reply. Different recipients may wait concurrently; the same recipient may have only one unresolved ask. `PI_INTERCOM_ASK_WAIT_MS` changes the blocking window.
 
-**`intercom_reply`** resolves the active or pending inbound context internally. Pass the stable `askId` returned by `intercom_pending` to select one exact ask. Optional `to` and `which: "oldest" | "latest"` remain available for compatibility. None of these values exposes the protocol thread ID.
+**`intercom_reply`** resolves the active or pending inbound context internally and inherits its original team. Use the `contextId` in a team message's reply hint for an exact ordinary message, or pass the stable `askId` returned by `intercom_pending` to select one exact ask. A `team` selector must match the original message, never override it. Optional `to` and `which: "oldest" | "latest"` remain available for compatibility. None of these values exposes the protocol thread ID.
 
 The broker refuses a second unresolved `intercom_ask` from one session to the same recipient. Wait for the first answer or use `intercom_send` for a non-blocking follow-up.
 

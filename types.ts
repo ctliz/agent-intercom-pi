@@ -36,6 +36,8 @@ export interface Message {
   expectsReply?: boolean;
   content: {
     text: string;
+    /** Public, immutable task-team name; not a broker registration scope. */
+    team?: string;
     attachments?: Attachment[];
     control?: IntercomCommonControlEnvelope;
   };

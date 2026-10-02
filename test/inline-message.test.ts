@@ -100,3 +100,14 @@ test("collapsed inline intercom messages keep preview, reply hint, and expand ke
   assert.match(rendered, /Ctrl\+O/);
   assert.match(rendered, /1 attachment/);
 });
+
+test("team labels remain visible in collapsed and expanded messages without overflowing", () => {
+  const tagged = { ...message, content: { ...message.content, team: "launch" } };
+  for (const collapsed of [false, true]) {
+    const component = new InlineMessageComponent(from, tagged, theme as any, undefined, undefined, collapsed);
+    assert.match(component.render(120).join("\n"), /\[Team: launch\]/);
+    for (const width of [1, 2, 3, 12, 40, 120]) {
+      for (const line of component.render(width)) assert.ok(visibleWidth(line) <= width);
+    }
+  }
+});

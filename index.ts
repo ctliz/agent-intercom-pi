@@ -16,7 +16,8 @@ import { formatMessageTiming } from "./ui/timestamps.ts";
 import { formatSessionDisplayName, sanitizeDisplayText, sessionOriginLabel, shortestUniqueIdPrefixes } from "./ui/session-identity.ts";
 import { getAskTimeoutMs, getAskWaitMs, loadConfig, type IntercomConfig } from "./config.ts";
 import type { SessionInfo, SessionRegistration, Message, Attachment } from "./types.ts";
-import { pendingAskId, ReplyTracker, type IntercomContext } from "./reply-tracker.ts";
+import { pendingAskId, replyContextId, ReplyTracker, type IntercomContext } from "./reply-tracker.ts";
+import { appendNamedTeamMembership, formatNamedTeamRoster, namedTeamRoster, requireNamedTeamMembers, resolveNamedMessageTeam, sessionNamedTeams } from "./named-team-membership.ts";
 import { InboundMessageConflictError, PersistentInboundInbox, readPendingAsksSnapshot, type StoredInboundMessage } from "./inbound-inbox.ts";
 import { PersistentOutboundOutbox } from "./outbound-outbox.ts";
 import { formatIntercomTeam, resolveBossIntercomTeam, resolveIntercomTeam, resolveManagedInboxSession } from "./team.ts";
@@ -34,7 +35,6 @@ import {
 } from "./workspace-join.ts";
 import {
   buildJoinableCircles,
-  createNamedTeam,
   findNamedTeamByScope,
   formatCreateSuccess,
   formatJoinableCircleList,
@@ -732,13 +732,14 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   const replyWaiters = new Map<string, {
     from: string;
     replyTo: string;
+    team?: string;
     resolve: (message: Message) => void;
     reject: (error: Error) => void;
   }>();
   function hasReplyWaiterForTarget(from: string): boolean {
     return Array.from(replyWaiters.values()).some((waiter) => waiter.from.toLowerCase() === from.toLowerCase());
   }
-  function waitForReply(from: string, replyTo: string, signal?: AbortSignal, onCancel?: () => void): Promise<Message> {
+  function waitForReply(from: string, replyTo: string, signal?: AbortSignal, onCancel?: () => void, team?: string): Promise<Message> {
     if (hasReplyWaiterForTarget(from)) {
       return Promise.reject(new Error(`Already waiting for a reply from "${from}"`));
     }
@@ -763,6 +764,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       replyWaiters.set(replyTo, {
         from,
         replyTo,
+        team,
         resolve: (message) => {
           cleanup();
           resolve(message);
@@ -921,6 +923,9 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }
     return rejectManagedJoin(classifyMembership(), isZhLocale());
   }
+  function taskTeamsAvailable(): boolean {
+    return !rejectCircleChange();
+  }
   async function applyCircleScope(ctx: ExtensionContext, scopeId: string, managerSessionId?: string): Promise<void> {
     if (managerSessionId) {
       process.env.AGENT_INTERCOM_MANAGER_TARGET = managerSessionId;
@@ -933,16 +938,22 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     await switchRuntimeScope(scopeId);
     syncPresenceIdentity(currentSessionId ?? ctx.sessionManager.getSessionId());
   }
-  async function createAndJoinNamedTeam(ctx: ExtensionContext, name: string): Promise<string> {
+  async function appendTaskTeam(ctx: ExtensionContext, name: string, create = false, members: string[] = [], work?: string) {
     const blocked = rejectCircleChange();
     if (blocked) throw new Error(blocked);
     const teamName = parseTeamName(name);
-    if (!getLiveContext(ctx)) {
-      startSessionRuntime(ctx);
+    if (!getLiveContext(ctx)) startSessionRuntime(ctx);
+    const activeClient = await ensureConnected("tool");
+    const memberIds: string[] = [];
+    for (const target of members) {
+      const id = await resolveSessionTarget(activeClient, target);
+      if (!id) throw new Error(`Team member "${target}" is not connected`);
+      memberIds.push(id);
     }
-    const managerSessionId = currentSessionId ?? ctx.sessionManager.getSessionId();
-    const team = createNamedTeam({ name: teamName, managerSessionId });
-    await applyCircleScope(ctx, team.scopeId, team.managerSessionId);
+    return appendNamedTeamMembership({ name: teamName, selfId: activeClient.sessionId!, create, members: memberIds, work });
+  }
+  async function createAndJoinNamedTeam(ctx: ExtensionContext, name: string): Promise<string> {
+    const team = await appendTaskTeam(ctx, name, true);
     return formatCreateSuccess({ team: team.name, name: currentDisplayName(), zh: isZhLocale() });
   }
   async function listOrJoinCircle(ctx: ExtensionContext, args: string): Promise<string> {
@@ -973,10 +984,12 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         ? (zh ? "没有这个编号的团队。" : "No team uses that number.")
         : (zh ? "无法加入该团队。" : "Could not join that team."));
     }
+    if (selected.kind === "named") {
+      await appendTaskTeam(ctx, selected.name);
+      return formatNamedJoinSuccess({ team: selected.name, name: currentDisplayName(), zh });
+    }
     await applyCircleScope(ctx, selected.scopeId, selected.managerSessionId);
-    return selected.kind === "named"
-      ? formatNamedJoinSuccess({ team: selected.name, name: currentDisplayName(), zh })
-      : formatJoinSuccess({ workspace: selected.name, name: currentDisplayName(), zh });
+    return formatJoinSuccess({ workspace: selected.name, name: currentDisplayName(), zh });
   }
 
   function restoreIntercomSessionId(): void {
@@ -1021,11 +1034,13 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     const attachmentText = stored.message.content.attachments?.length
       ? formatAttachments(stored.message.content.attachments)
       : "";
-    const replyCommand = config.replyHint && stored.message.expectsReply
-      ? batchSize === 1
-        ? `intercom_reply({ message: "..." })`
-        : `intercom_reply({ to: "${stored.from.id}", message: "..." })`
-      : undefined;
+    const replyCommand = config.replyHint && stored.message.content.team
+      ? `intercom_reply({ contextId: "${replyContextId(stored.from.id, stored.message.id)}", message: "..." })`
+      : config.replyHint && stored.message.expectsReply
+        ? batchSize === 1
+          ? `intercom_reply({ message: "..." })`
+          : `intercom_reply({ to: "${stored.from.id}", message: "..." })`
+        : undefined;
     return {
       key: stored.key,
       from: stored.from,
@@ -1039,7 +1054,8 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     const senderDisplay = formatSessionDisplayName(entry.from);
     const prefix = position ? `[${position.index}/${position.total}] ` : "";
     const replyInstruction = entry.replyCommand ? `\n\nTo reply, use: ${entry.replyCommand}` : "";
-    return `**${prefix}📨 From ${senderDisplay}** (${entry.from.cwd})${replyInstruction}\n\n${entry.bodyText}`;
+    const teamLabel = entry.message.content.team ? `[Team: ${sanitizeDisplayText(entry.message.content.team)}] ` : "";
+    return `**${prefix}${teamLabel}📨 From ${senderDisplay}** (${entry.from.cwd})${replyInstruction}\n\n${entry.bodyText}`;
   }
   function sendIncomingBatch(entries: InboundMessageEntry[], generation = runtimeGeneration, forceTrigger = false): void {
     if (entries.length === 0) return;
@@ -1208,6 +1224,18 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         error: inboundAuthorization.error,
         timestamp: Date.now(),
       });
+      return;
+    }
+    try {
+      if (message.content.team !== undefined) {
+        if (!taskTeamsAvailable()) throw new Error("Named task-team messages are unavailable in managed-team mode");
+        requireNamedTeamMembers(message.content.team, receivingClient.sessionId!, from.id);
+      }
+      const waiter = message.replyTo ? replyWaiters.get(message.replyTo) : undefined;
+      if (waiter && waiter.team !== message.content.team) throw new Error("Reply team does not match the original ask");
+    } catch (error) {
+      receivingClient.rejectMessage(deliveryId, getErrorMessage(error));
+      pi.appendEntry("intercom_inbox_team_denied", { from: from.id, messageId: message.id, error: getErrorMessage(error), timestamp: Date.now() });
       return;
     }
     let enqueued;
@@ -2226,6 +2254,8 @@ Usage:
       message: Type.Optional(Type.String({
         description: "Message to send (for 'send', 'ask', or 'reply' action)",
       })),
+      team: Type.Optional(Type.String({ description: "Task team for sending or selecting a reply; replies cannot change the original team" })),
+      contextId: Type.Optional(Type.String({ description: "Exact inbound message selector from its reply hint" })),
       attachments: Type.Optional(Type.Array(Type.Object({
         type: StringEnum(["file", "snippet", "context"] as const),
         name: Type.String(),
@@ -2275,7 +2305,7 @@ Usage:
         }
       }
 
-      const { action, to, message, attachments, replyTo, askId, session, which } = params;
+      const { action, to, message, attachments, replyTo, askId, session, which, team, contextId } = params;
 
       switch (action) {
         case "list": {
@@ -2337,6 +2367,10 @@ Usage:
                 details: { error: true },
               };
             }
+            const messageTeam = taskTeamsAvailable()
+              ? resolveNamedMessageTeam(connectedClient.sessionId!, sendTo, team)
+              : undefined;
+            if (!taskTeamsAvailable() && team !== undefined) throw new Error("Named task teams are unavailable in managed-team mode");
             if (!replyTo && config.confirmSend && ctx.hasUI) {
               const attachmentText = attachments?.length ? formatAttachments(attachments) : "";
               const confirmed = await ctx.ui.confirm(
@@ -2352,6 +2386,7 @@ Usage:
             }
             const result = await connectedClient.send(sendTo, {
               text: message,
+              team: messageTeam,
               attachments,
               replyTo,
             });
@@ -2364,7 +2399,7 @@ Usage:
             }
             pi.appendEntry("intercom_sent", {
               to,
-              message: { text: message, attachments, replyTo },
+              message: { text: message, attachments, replyTo, team: messageTeam },
               messageId: result.id,
               timestamp: Date.now(),
             });
@@ -2373,8 +2408,8 @@ Usage:
               inboundInbox?.dismissPendingAsk(replyTo, sendTo);
             }
             return {
-              content: [{ type: "text", text: `Message sent to ${to}` }],
-              details: deliveryResultDetails(result),
+              content: [{ type: "text", text: `Message sent to ${to}${messageTeam ? ` [Team: ${messageTeam}]` : ""}` }],
+              details: deliveryResultDetails(result, messageTeam ? { team: messageTeam } : {}),
             };
           } catch (error) {
             return {
@@ -2406,6 +2441,7 @@ Usage:
           }
           let replyPromise: Promise<Message> | null = null;
           let questionId: string | null = null;
+          let messageTeam: string | undefined;
 
           try {
             const sendTo = await resolveAuthorizedTarget(connectedClient, to);
@@ -2427,12 +2463,17 @@ Usage:
                 details: { error: true },
               };
             }
+            messageTeam = taskTeamsAvailable()
+              ? resolveNamedMessageTeam(connectedClient.sessionId!, sendTo, team)
+              : undefined;
+            if (!taskTeamsAvailable() && team !== undefined) throw new Error("Named task teams are unavailable in managed-team mode");
             questionId = randomUUID();
-            replyPromise = waitForReply(sendTo, questionId, _signal, () => { void connectedClient.cancelAsk(questionId!); });
+            replyPromise = waitForReply(sendTo, questionId, _signal, () => { void connectedClient.cancelAsk(questionId!); }, messageTeam);
             replyPromise.catch(() => undefined);
             const sendResult = await connectedClient.send(sendTo, {
               messageId: questionId,
               text: message,
+              team: messageTeam,
               attachments,
               replyTo,
               expectsReply: true,
@@ -2455,7 +2496,7 @@ Usage:
             }
             pi.appendEntry("intercom_sent", {
               to,
-              message: { text: message, attachments, replyTo },
+              message: { text: message, attachments, replyTo, team: messageTeam },
               messageId: sendResult.id,
               timestamp: Date.now(),
             });
@@ -2466,17 +2507,18 @@ Usage:
               : "";
             pi.appendEntry("intercom_received", {
               from: to,
-              message: { text: replyText, attachments: replyMessage.content.attachments },
+              message: { text: replyText, team: replyMessage.content.team, attachments: replyMessage.content.attachments },
               messageId: replyMessage.id,
               timestamp: replyMessage.timestamp,
             });
             return {
-              content: [{ type: "text", text: `**Reply from ${to}:**\n${replyText}${replyAttachments}` }],
-              details: {},
+              content: [{ type: "text", text: `**${messageTeam ? `[Team: ${messageTeam}] ` : ""}Reply from ${to}:**\n${replyText}${replyAttachments}` }],
+              details: messageTeam ? { team: messageTeam } : {},
             };
           } catch (error) {
             if (error instanceof AskWaitElapsedError) {
-              return deferredAskResult(to, error, await connectedClient.deferAsk(error.replyTo));
+              const deferred = deferredAskResult(to, error, await connectedClient.deferAsk(error.replyTo));
+              return { ...deferred, details: { ...deferred.details, ...(messageTeam ? { team: messageTeam } : {}) } };
             }
             if (questionId) rejectReplyWaiter(questionId, toError(error));
             if (replyPromise) {
@@ -2508,7 +2550,9 @@ Usage:
               if ("code" in requested) throw new BossTeamScopeError(requested.code, requested.error);
               exactReplyTarget = requested.targetId;
             }
-            const target = replyTracker.resolveReplyTarget({ to: exactReplyTarget, replyTo, askId, which });
+            const target = replyTracker.resolveReplyTarget({ to: exactReplyTarget, replyTo, askId, which, team, contextId });
+            const replyTeam = target.message.content.team;
+            if (replyTeam !== undefined) requireNamedTeamMembers(replyTeam, connectedClient.sessionId!, target.from.id);
             if (bossTeamScope.present) {
               const resolution = resolveBossLiveTarget(bossTeamScope, target.from.id, await connectedClient.listSessions(), connectedClient.sessionId);
               if ("code" in resolution) throw new BossTeamScopeError(resolution.code, resolution.error);
@@ -2522,6 +2566,7 @@ Usage:
             const threadedReplyTo = target.message.expectsReply ? target.message.id : undefined;
             const result = await connectedClient.send(target.from.id, {
               text: message,
+              team: replyTeam,
               ...(threadedReplyTo ? { replyTo: threadedReplyTo } : {}),
             });
             if (!result.delivered) {
@@ -2539,17 +2584,17 @@ Usage:
               replyTracker.markReplied(threadedReplyTo, target.from.id);
               inboundInbox?.dismissPendingAsk(threadedReplyTo, target.from.id);
             } else {
-              replyTracker.dismissOrdinarySender(target.from.id);
+              replyTracker.dismissOrdinarySender(target.from.id, target.message.id);
             }
             pi.appendEntry("intercom_sent", {
               to: bossTeamScope.present ? target.from.id : target.from.name || target.from.id,
-              message: { text: message, ...(threadedReplyTo ? { replyTo: threadedReplyTo } : {}) },
+              message: { text: message, team: replyTeam, ...(threadedReplyTo ? { replyTo: threadedReplyTo } : {}) },
               messageId: result.id,
               timestamp: Date.now(),
             });
             return {
-              content: [{ type: "text", text: `Reply sent to ${bossTeamScope.present ? target.from.id : target.from.name || target.from.id}` }],
-              details: deliveryResultDetails(result, threadedReplyTo ? { replyTo: threadedReplyTo } : {}),
+              content: [{ type: "text", text: `Reply sent to ${bossTeamScope.present ? target.from.id : target.from.name || target.from.id}${replyTeam ? ` [Team: ${replyTeam}]` : ""}` }],
+              details: deliveryResultDetails(result, { ...(threadedReplyTo ? { replyTo: threadedReplyTo } : {}), ...(replyTeam ? { team: replyTeam } : {}) }),
             };
           } catch (error) {
             return {
@@ -2621,7 +2666,7 @@ Usage:
               : "";
             const sender = bossTeamScope.present ? ask.from.id : ask.from.name || ask.from.id;
             return {
-              content: [{ type: "text", text: `**Pending ask ${ask.id}**\nInbox: ${inboxSessionId}\nFrom: ${sender}\n\n${ask.message.content.text}${attachmentText}` }],
+              content: [{ type: "text", text: `**Pending ask ${ask.id}**\nInbox: ${inboxSessionId}\nFrom: ${sender}${ask.message.content.team ? `\nTeam: ${ask.message.content.team}` : ""}\n\n${ask.message.content.text}${attachmentText}` }],
               details: {
                 inboxSessionId,
                 ask: {
@@ -2631,6 +2676,7 @@ Usage:
                   ...(ask.deferredAt ? { deferredAt: ask.deferredAt } : {}),
                   preview: ask.preview,
                   body: ask.message.content.text,
+                  ...(ask.message.content.team ? { team: ask.message.content.team } : {}),
                   attachments: ask.message.content.attachments ?? [],
                 },
               },
@@ -2640,7 +2686,7 @@ Usage:
           const lines = asks.map((ask) => {
             const state = ask.deferredAt ? " · async" : "";
             const sender = bossTeamScope.present ? ask.from.id : ask.from.name || ask.from.id;
-            return `- ${ask.id} · ${sender}${ask.selector} · ${ask.elapsedSeconds}s ago${state} · ${ask.preview}`;
+            return `- ${ask.id} · ${sender}${ask.message.content.team ? ` · Team: ${ask.message.content.team}` : ""}${ask.selector} · ${ask.elapsedSeconds}s ago${state} · ${ask.preview}`;
           });
           return {
             content: [{ type: "text", text: `**Pending asks:**\n${lines.join("\n")}` }],
@@ -2652,6 +2698,7 @@ Usage:
                 receivedAt: ask.receivedAt,
                 ...(ask.deferredAt ? { deferredAt: ask.deferredAt } : {}),
                 preview: ask.preview,
+                ...(ask.message.content.team ? { team: ask.message.content.team } : {}),
               })),
             },
           };
@@ -2747,6 +2794,7 @@ Usage:
     promptGuidelines: ["Use intercom_send for progress updates, notifications, and other messages that do not require a conversational reply."],
     parameters: Type.Object({
       to: Type.String({ description: "Required recipient session name or stable session ID" }),
+      team: Type.Optional(Type.String({ description: "Task team name. Required when both sessions share multiple teams." })),
       message: Type.String({ description: "Required message to send" }),
       attachments: attachmentParameters,
     }),
@@ -2763,6 +2811,7 @@ Usage:
     promptGuidelines: ["Use intercom_ask only when work genuinely depends on another session's answer. Use intercom_send for progress checks, status requests, assignments, notifications, and follow-ups. Different recipients may be asked concurrently, but keep only one unresolved ask per recipient."],
     parameters: Type.Object({
       to: Type.String({ description: "Required recipient session name or stable session ID" }),
+      team: Type.Optional(Type.String({ description: "Task team name. Required when both sessions share multiple teams." })),
       message: Type.String({ description: "Required question to ask" }),
       attachments: attachmentParameters,
     }),
@@ -2776,12 +2825,14 @@ Usage:
     label: "Intercom Reply",
     description: "Reply to an inbound intercom message or ask. Exact protocol threading is resolved internally.",
     promptSnippet: "Reply to the active or pending inbound intercom message.",
-    promptGuidelines: ["Use intercom_reply to answer an inbound intercom message. Prefer the stable `askId` returned by intercom_pending when selecting an exact ask; `to` plus `which` remains available for compatibility."],
+    promptGuidelines: ["Use intercom_reply to answer an inbound message, inheriting its original team. Prefer its `contextId` reply hint or the `askId` from intercom_pending. Never route replies using a mutable current team or mix work from different teams."],
     parameters: Type.Object({
       message: Type.String({ description: "Required reply text" }),
       to: Type.Optional(Type.String({ description: "Optional sender/session selector when multiple senders or asks are pending; never a message or thread ID" })),
       which: Type.Optional(StringEnum(["oldest", "latest"] as const, { description: "Select the oldest or latest ask when the chosen sender has multiple unresolved asks" })),
       askId: Type.Optional(Type.String({ description: "Stable ask selector returned by intercom_pending" })),
+      contextId: Type.Optional(Type.String({ description: "Exact inbound message selector from its reply hint, including ordinary messages" })),
+      team: Type.Optional(Type.String({ description: "Select an original-message team; cannot override it" })),
     }),
     execute: executeSplitAction("reply"),
     renderCall: renderSplitCall("reply"),
@@ -2791,11 +2842,11 @@ Usage:
   registerIntercomTool({
     name: "intercom_team",
     label: "Intercom Team",
-    description: "Show your current manager and the live coworkers owned by that manager. No arguments are required.",
-    promptSnippet: "Find your manager and managed coworkers without searching the global peer list.",
-    promptGuidelines: ["Use intercom_team whenever you need your manager's target or the other coworkers in your managed group."],
-    parameters: Type.Object({}),
-    async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+    description: "Show all named task teams you belong to, or inspect one by name. Falls back to managed-team discovery when no named task team exists.",
+    promptSnippet: "Find your task teams, managers, and teammates.",
+    promptGuidelines: ["Use intercom_team to inspect your teams. A session can belong to multiple teams, with a different manager in each; specify `team` when the task is ambiguous."],
+    parameters: Type.Object({ team: Type.Optional(Type.String({ description: "Named task team to inspect; omit to show all your teams" })) }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       try {
         const connectedClient = await ensureConnected("tool");
         syncPresenceIdentity(ctx.sessionManager.getSessionId());
@@ -2804,6 +2855,15 @@ Usage:
           if (selfError) throw new BossTeamScopeError("BOSS_TEAM_METADATA_INVALID", selfError);
         }
         const sessions = await connectedClient.listSessions();
+        if (taskTeamsAvailable()) {
+          const mine = sessionNamedTeams(connectedClient.sessionId!);
+          const selected = params.team === undefined ? mine : mine.filter((entry) => entry.name === params.team);
+          if (params.team !== undefined && selected.length === 0) throw new Error("You are not a member of that task team");
+          if (selected.length > 0) {
+            const teams = selected.map((entry) => namedTeamRoster(entry, connectedClient.sessionId!, sessions));
+            return { content: [{ type: "text", text: teams.map(formatNamedTeamRoster).join("\n\n") }], details: { self: { id: connectedClient.sessionId }, teams } };
+          }
+        } else if (params.team !== undefined) throw new Error("Named task teams are unavailable in Boss mode");
         const team = bossTeamScope.restricted
           ? resolveBossIntercomTeam({ selfId: connectedClient.sessionId, sessions, scope: bossTeamScope })
           : await resolveIntercomTeam({ selfId: connectedClient.sessionId, sessions });
@@ -2827,26 +2887,34 @@ Usage:
     name: "intercom_join",
     executionMode: "sequential",
     label: "Intercom Join",
-    description: "List, join, or create a named intercom team without tmux. Omit name to list joinable teams. Set create=true to create a team and join as manager.",
-    promptSnippet: "Join or create a named intercom team so intercom_team works without tmux.",
+    description: "List, join, or create a task team. Joining appends membership without leaving other named teams. The manager can add connected sessions using members; the creator need not have a session name.",
+    promptSnippet: "After user approval, form a task team with the named sessions they want to collaborate with.",
     promptGuidelines: [
-      "Use intercom_join with no name to list named teams and TmuxDeck workspaces.",
-      "Use intercom_join({ name: \"billing\" }) to join an existing named team or workspace.",
-      "Use intercom_join({ name: \"billing\", create: true }) to create a named team and join as manager.",
+      "For independent Pi sessions: when the user asks you to collaborate with named Pi sessions or delegate work, and this task has no approved team, ask once whether to form a team with you and those sessions (for example: 要把我、front、writer 组成一个 team 来负责这个任务吗？). Wait for approval before creating a team or adding peers.",
+      "An explicit user request to create/join a team is approval. Do not ask again for an approved team or in an inbound team-message turn. If the user declines, do not keep prompting or silently create a team. Without a shared team, send an ungrouped direct message by omitting `team`; belonging to an unrelated team must not prevent initial contact. Explicit team messages still require both sessions to be members.",
+      "After approval, discover the intended sessions, then use intercom_join({ name: \"launch\", create: true, members: [\"front\", \"writer\"], work: \"Current task\" }). The tool adds everyone together; do not ask the user to join each terminal manually.",
+      "Reuse the approved team for the same task and append new approved members. Joining another team preserves previous memberships. The same participants doing a different task may need a different team.",
+      "Pass `team` when sending task messages, especially if peers share multiple teams. Replies inherit their original message's team automatically.",
     ],
     parameters: Type.Object({
       name: Type.Optional(Type.String({ description: "Team name to join. Omit to list joinable teams." })),
       create: Type.Optional(Type.Boolean({ description: "Create this named team and join as manager. Requires name." })),
+      members: Type.Optional(Type.Array(Type.String({ description: "Connected session name or stable ID to add; manager-only, and requires name" }))),
+      work: Type.Optional(Type.String({ description: "Task description when creating a team; requires create=true" })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       try {
         const zh = isZhLocale();
-        if (params.create) {
+        if (params.create || params.members !== undefined || params.work !== undefined) {
           if (typeof params.name !== "string" || !params.name.trim()) {
-            throw new Error(zh ? "创建团队需要名称。" : "Creating a team requires a name.");
+            throw new Error(zh ? "组队需要名称。" : "Forming a team requires a name.");
           }
-          const text = await createAndJoinNamedTeam(ctx, params.name);
-          return { content: [{ type: "text", text }] };
+          const team = await appendTaskTeam(ctx, params.name, params.create === true, params.members ?? [], params.work);
+          const roster = namedTeamRoster(team, currentSessionId!, await client!.listSessions());
+          const text = params.create
+            ? formatCreateSuccess({ team: team.name, name: currentDisplayName(), zh })
+            : formatNamedJoinSuccess({ team: team.name, name: currentDisplayName(), zh });
+          return { content: [{ type: "text", text: `${text}\n\n${formatNamedTeamRoster(roster)}` }], details: { team: roster } };
         }
         const text = await listOrJoinCircle(ctx, typeof params.name === "string" ? params.name : "");
         return { content: [{ type: "text", text }] };
@@ -3078,6 +3146,11 @@ Usage:
       const zh = isZhLocale();
       try {
         const membership = classifyMembership();
+        const taskTeams = currentSessionId ? sessionNamedTeams(currentSessionId) : [];
+        if (taskTeams.length > 0 && taskTeamsAvailable()) {
+          notifyIfLive(ctx, `${zh ? "任务团队" : "Task teams"}: ${taskTeams.map((entry) => entry.name).join(", ")}\n${zh ? "你的显示名" : "Display name"}: ${currentDisplayName()}`, "info");
+          return;
+        }
         const namedTeam = runtimeScopeId ? findNamedTeamByScope(runtimeScopeId) : undefined;
         const workspace = namedTeam?.name
           ? undefined

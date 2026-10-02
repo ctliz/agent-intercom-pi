@@ -38,6 +38,7 @@ import type {
 
 export interface SendOptions {
   text: string;
+  team?: string;
   attachments?: Attachment[];
   control?: IntercomCommonControlEnvelope;
   replyTo?: string;
@@ -124,6 +125,8 @@ function isMessage(value: unknown): value is Message {
   if (typeof content.text !== "string") {
     return false;
   }
+
+  if (content.team !== undefined && (typeof content.team !== "string" || !/^[A-Za-z][A-Za-z0-9_-]{0,31}$/.test(content.team))) return false;
 
   const attachmentsValid = content.attachments === undefined
     || (Array.isArray(content.attachments) && content.attachments.every(isAttachment));
@@ -811,6 +814,7 @@ export class IntercomClient extends EventEmitter {
       expectsReply: options.expectsReply,
       content: {
         text: options.text,
+        ...(options.team === undefined ? {} : { team: options.team }),
         attachments: options.attachments,
         control: options.control,
       },

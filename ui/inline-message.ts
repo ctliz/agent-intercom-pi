@@ -47,7 +47,8 @@ export class InlineMessageComponent implements Component {
     }
     const bodyWidth = Math.max(1, width - 2);
 
-    const header = ` 📨 From: ${senderName} (${senderCwd}) `;
+    const teamLabel = this.message.content.team ? `[Team: ${sanitizeDisplayText(this.message.content.team)}] ` : "";
+    const header = ` ${teamLabel}📨 From: ${senderName} (${senderCwd}) `;
     const headerText = truncateToWidth(this.collapsed ? `${header} Ctrl+O expands ` : header, bodyWidth, "");
     const headerPadding = Math.max(0, bodyWidth - visibleWidth(headerText));
     lines.push(this.theme.fg("accent", `╭${headerText}${borderChar.repeat(headerPadding)}╮`));

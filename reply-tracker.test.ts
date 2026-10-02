@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DEFAULT_ASK_WAIT_MS, getAskTimeoutMs, getAskWaitMs } from "./config.ts";
-import { pendingAskId, ReplyTracker } from "./reply-tracker.ts";
+import { pendingAskId, replyContextId, ReplyTracker } from "./reply-tracker.ts";
 import type { Message, SessionInfo } from "./types.ts";
 
 function createSession(id: string, name: string): SessionInfo {
@@ -254,4 +254,44 @@ test("a new batch waits until the active agent run ends", () => {
   tracker.endTurn();
   tracker.beginTurn(1005);
   assert.equal(tracker.resolveReplyTarget({}, 1006).message.id, "note-second");
+});
+
+test("same sender in two teams requires explicit context and answering one preserves the other", () => {
+  const tracker = new ReplyTracker();
+  const from = createSession("planner-id", "planner");
+  const first = createMessage("launch-message", "Launch work", false);
+  first.content.team = "launch";
+  const second = createMessage("review-message", "Review work", false);
+  second.content.team = "review";
+  tracker.queueTurnContexts([
+    tracker.recordIncomingMessage(from, first, 1000),
+    tracker.recordIncomingMessage(from, second, 1001),
+  ]);
+  tracker.beginTurn(1002);
+  assert.throws(() => tracker.resolveReplyTarget({}, 1003), /multiple teams/);
+  const contextId = replyContextId(from.id, first.id);
+  assert.doesNotMatch(contextId, /launch-message|planner-id/);
+  assert.equal(tracker.resolveReplyTarget({ contextId }, 1003).message.content.team, "launch");
+  assert.throws(() => tracker.resolveReplyTarget({ contextId, team: "review" }, 1003), /must match/);
+  tracker.dismissOrdinarySender(from.id, first.id);
+  assert.equal(tracker.resolveReplyTarget({}, 1003).message.content.team, "review");
+});
+
+test("a mixed-team ask and ordinary message must not implicitly select the ask", () => {
+  const tracker = new ReplyTracker();
+  const from = createSession("planner-id", "planner");
+  const ask = createMessage("launch-ask", "Launch?", true);
+  ask.content.team = "launch";
+  const note = createMessage("review-note", "Review", false);
+  note.content.team = "review";
+  tracker.queueTurnContexts([
+    tracker.recordIncomingMessage(from, ask, 1000),
+    tracker.recordIncomingMessage(from, note, 1001),
+  ]);
+  tracker.beginTurn(1002);
+  assert.throws(() => tracker.resolveReplyTarget({}, 1003), /multiple teams/);
+  assert.equal(tracker.resolveReplyTarget({ team: "review" }, 1003).message.id, note.id);
+  assert.equal(tracker.resolveReplyTarget({ askId: pendingAskId(from.id, ask.id) }, 1003).message.content.team, "launch");
+  tracker.endTurn();
+  assert.throws(() => tracker.resolveReplyTarget({ askId: pendingAskId(from.id, ask.id), team: "review" }, 1004), /must match/);
 });

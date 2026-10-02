@@ -2,8 +2,8 @@
 name: pi-intercom
 description: |
   Streamline session-to-session coordination with pi-intercom. Send messages,
-  delegate tasks, and coordinate work across multiple pi sessions on the same
-  machine. Use for planner-worker workflows, cross-session context sharing,
+  delegate tasks, and form task teams after user approval across multiple Pi
+  sessions on the same machine. Use for planner-worker workflows, cross-session context sharing,
   and real-time collaboration between sessions.
 ---
 
@@ -23,6 +23,60 @@ This skill covers how to handle those orchestrator-side escalations.
 - **Context handoffs**: Send findings from a research session to an execution session
 - **Clarification loops**: Worker asks questions, planner answers, work continues
 - **Multi-session workflows**: Coordinate between specialized sessions (frontend/backend, research/implementation)
+
+## Task Teams: Ask Once, Then Organize (Pi 0.14+)
+
+Independently opened Pi sessions do not form a team merely by sharing a directory.
+When the user asks you to collaborate with named sessions (for example `front`
+and `writer`) or delegate work, and this task has no approved team, ask once:
+
+> 要把我、front、writer 组成一个 team 来负责这个任务吗？
+
+Wait for approval before creating a team or adding peers. An explicit instruction
+to create/join a team is already approval. Do not ask again for the same approved
+team, and do not prompt the user when replying to an inbound team message. If the
+user declines, do not repeatedly ask or silently create a team. Without a shared
+team, omit `team` to send an ungrouped direct message, even if either session
+belongs to unrelated teams. This allows initial contact before forming a team.
+Explicit team messages still require both sessions to be members; multiple
+shared teams still require selecting the intended task team.
+
+After approval, discover the named sessions and form the team in one operation:
+
+```typescript
+intercom_list({})
+intercom_join({
+  name: "launch",
+  create: true,
+  members: ["front", "writer"],
+  work: "Build the product page; front owns UI, writer owns copy",
+})
+intercom_send({ team: "launch", to: "front", message: "Implement the product page UI." })
+intercom_send({ team: "launch", to: "writer", message: "Write the product page copy." })
+```
+
+The creator is the manager of this task team and does not need a `/name`.
+Members are resolved to stable session IDs; no user needs to join each terminal
+manually. Only the manager can add other sessions with `members`; a session can
+join itself with `intercom_join({ name: "launch" })`. Joining appends membership
+without leaving other named teams or changing their managers. The approved
+manager can append a new approved peer with
+`intercom_join({ name: "launch", members: ["reviewer"] })`.
+
+Reuse the team for this task, not for every message. A different task may need a
+different team even with identical participants. `intercom_team({})` shows all
+your named teams; `intercom_team({ team: "launch" })` inspects one.
+
+Messages carry their team separately from their text. Read each `[Team: ...]`
+label independently, including mixed-team batches. Use the exact `contextId`
+reply hint to answer ordinary messages, or `askId` from `intercom_pending` for
+asks. `intercom_reply` inherits the original message's team; never choose a reply
+team using a mutable current-team setting. When peers share multiple teams,
+explicitly pass `team` to sends and asks. Ambiguous replies fail rather than guess.
+
+This is Pi-local task grouping, not a broker security boundary or separate model
+history for each team. Other adapters and managed-team integrations are unchanged;
+all participating Pi sessions must load adapter 0.14.0 or newer.
 
 ## Codemode (Pi 0.99.1+)
 
@@ -91,12 +145,11 @@ Do not add artificial sleeps to form a batch. Each original message keeps its se
 
 ### Pattern 3: Find Your Manager or Team
 
-If no team exists yet, create one and have the other session join. This does not require tmux:
+For independent Pi sessions, ask for approval first, then create a task team and add the connected peer:
 
 ```typescript
-intercom_join({ name: "billing", create: true })  // manager
-intercom_join({ name: "billing" })                 // other session
-intercom_team({})
+intercom_join({ name: "billing", create: true, members: ["worker"], work: "Implement billing" })
+intercom_team({ team: "billing" })
 ```
 
 `/intercom-create billing` and `/intercom-join billing` do the same from the command line. `intercom_join({})` lists named teams and TmuxDeck workspaces without printing raw scopes.
@@ -135,7 +188,7 @@ intercom_pending({ askId: "ask-..." }) // Retrieve the full untruncated body whe
 intercom_reply({ askId: "ask-...", message: "Use exponential backoff starting at 100ms." })
 ```
 
-`intercom_reply` preserves exact threading internally. `intercom_pending` returns stable receiver-local ask IDs and short previews; models never see or construct the protocol message ID. Managers can pass `session` with an owned coworker target from `intercom_team` to inspect that coworker's pending inbox.
+`intercom_reply` preserves exact threading and the original team internally. Team-message reply hints provide an exact receiver-local `contextId`, including for ordinary messages. `intercom_pending` returns stable receiver-local ask IDs, team labels, and short previews; models never see or construct the protocol message ID. Managers can pass `session` with an owned coworker target from `intercom_team` to inspect that coworker's pending inbox.
 
 ### Pattern 5: Broadcast to Multiple Workers
 

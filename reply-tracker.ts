@@ -21,6 +21,10 @@ export function pendingAskId(fromSessionId: string, messageId: string): string {
   return `ask-${digest}`;
 }
 
+export function replyContextId(fromSessionId: string, messageId: string): string {
+  return pendingAskId(fromSessionId, messageId).replace(/^ask-/, "ctx-");
+}
+
 function matchesPendingSender(context: IntercomContext, to: string): boolean {
   if (context.from.id === to) {
     return true;
@@ -91,8 +95,23 @@ export class ReplyTracker {
     this.currentTurnContexts = [];
   }
 
-  resolveReplyTarget(options: { to?: string; replyTo?: string; askId?: string; which?: ReplyWhich }, now = Date.now()): IntercomContext {
+  resolveReplyTarget(options: { to?: string; replyTo?: string; askId?: string; which?: ReplyWhich; team?: string; contextId?: string }, now = Date.now()): IntercomContext {
     this.pruneExpired(now);
+    const checkTeam = (context: IntercomContext): IntercomContext => {
+      if (options.team !== undefined && context.message.content.team !== options.team) {
+        throw new Error("Reply team must match the original message; it cannot be changed");
+      }
+      return context;
+    };
+    if (options.contextId) {
+      const match = [...this.currentTurnContexts, ...this.pendingAsks.values()].find((context) =>
+        replyContextId(context.from.id, context.message.id) === options.contextId
+      );
+      if (!match) throw new Error(`No active message with context ID "${options.contextId}"`);
+      if (options.to && !matchesPendingSender(match, options.to)) throw new Error("Reply context is not from the selected sender");
+      if (options.askId && pendingAskId(match.from.id, match.message.id) !== options.askId) throw new Error("Reply selectors refer to different messages");
+      return checkTeam(match);
+    }
 
     if (options.askId) {
       const match = Array.from(this.pendingAsks.values()).find((context) =>
@@ -104,7 +123,7 @@ export class ReplyTracker {
       if (options.to && !matchesPendingSender(match, options.to)) {
         throw new Error(`Pending ask "${options.askId}" is not from "${options.to}"`);
       }
-      return match;
+      return checkTeam(match);
     }
 
     if (options.replyTo) {
@@ -119,13 +138,18 @@ export class ReplyTracker {
       if (matches.length > 1) {
         throw new Error(`Multiple pending asks use message ID "${options.replyTo}" — specify \`to\``);
       }
-      return matches[0]!;
+      return checkTeam(matches[0]!);
     }
 
-    if (this.currentTurnContexts.length > 0) {
+    const inTeam = (context: IntercomContext) => options.team === undefined || context.message.content.team === options.team;
+    const currentTurnContexts = this.currentTurnContexts.filter(inTeam);
+    if (currentTurnContexts.length > 0) {
       const turnMatches = options.to
-        ? this.currentTurnContexts.filter((context) => matchesPendingSender(context, options.to!))
-        : this.currentTurnContexts;
+        ? currentTurnContexts.filter((context) => matchesPendingSender(context, options.to!))
+        : currentTurnContexts;
+      if (new Set(turnMatches.map((context) => context.message.content.team)).size > 1) {
+        throw new Error("Messages from multiple teams are active — specify `contextId`, `askId`, or `team`");
+      }
       const replyableMatches = turnMatches.filter((context) => context.message.expectsReply);
       if (replyableMatches.length === 1) {
         return replyableMatches[0]!;
@@ -146,14 +170,13 @@ export class ReplyTracker {
       }
     }
 
-    const pending = Array.from(this.pendingAsks.values());
-    if (pending.length === 1) {
-      return pending[0]!;
-    }
-
+    const pending = Array.from(this.pendingAsks.values()).filter(inTeam);
     const matches = options.to
       ? pending.filter((context) => matchesPendingSender(context, options.to!))
       : pending;
+    if (new Set(matches.map((context) => context.message.content.team)).size > 1) {
+      throw new Error("Pending asks belong to multiple teams — specify `askId` or `team`");
+    }
     if (matches.length === 1) return matches[0]!;
     if (matches.length > 1) {
       if (!options.to && distinctSenders(matches) > 1) {
@@ -174,9 +197,9 @@ export class ReplyTracker {
     this.dismissPendingAsk(replyTo, fromSessionId);
   }
 
-  dismissOrdinarySender(fromSessionId: string): void {
+  dismissOrdinarySender(fromSessionId: string, messageId?: string): void {
     this.currentTurnContexts = this.currentTurnContexts.filter((context) =>
-      context.message.expectsReply || context.from.id !== fromSessionId
+      context.message.expectsReply || context.from.id !== fromSessionId || (messageId !== undefined && context.message.id !== messageId)
     );
   }
 

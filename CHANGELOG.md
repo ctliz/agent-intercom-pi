@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.14.0 - 2026-10-02
+
+- Add Pi-local task teams with persistent, additive membership. A manager can create a team and add connected named or unnamed sessions in one operation; each session can belong to multiple teams with different managers.
+- Prompt agents to ask once for user approval before forming a task team, reuse it for the same task, and preserve task context in every message and reply.
+- Carry public team labels in messages, show all memberships with `intercom_team`, and inherit the exact original team when replying with receiver-local `contextId` or `askId` selectors. Refuse ambiguous mixed-team replies rather than guessing.
+- Allow initial ungrouped contact when sessions have no shared team, including sessions already in unrelated teams. Explicit team messages still require both members; multiple shared teams require selecting the task.
+- Serialize named-team updates across independent Pi processes and preserve membership and pending-ask reply context across reloads. Legacy named-team peers must rejoin to record explicit membership.
+- Validate Pi 1.0.0, including codemode `on` and `only`, structured results, prompt guidelines, and narrow-width TUI components. Update the development baseline to Pi 1.0.0. Shared protocol v4, other adapters, and managed-team integrations remain unchanged.
+- Move host-provided extension packages (`@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`, and `typebox`) from `dependencies` to `peerDependencies` with `*` range and `devDependencies` to comply with Pi's extension loader contract and prevent duplicate runtime module copies.
+
 ## 0.13.0 - 2026-09-30
 
 - Update the Pi dependency and CI baseline to 0.99.1.

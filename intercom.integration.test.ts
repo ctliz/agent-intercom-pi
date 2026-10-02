@@ -2080,7 +2080,7 @@ test("all intercom tools declare codemode output and preserve error data", { con
   }
 });
 
-test("Pi 0.99 codemode sandbox receives structured success and error results", { concurrency: false }, async () => {
+test("Pi codemode sandbox receives structured success and error results", { concurrency: false }, async () => {
   const { createAgentSession, createCodemodeExtension, DefaultResourceLoader, SessionManager, SettingsManager } = await import("@earendil-works/pi-coding-agent");
   const { default: piIntercomExtension } = await import("./index.ts");
   const { planner, cleanup } = await setupClients();
@@ -2104,11 +2104,18 @@ test("Pi 0.99 codemode sandbox receives structured success and error results", {
       sessionManager: SessionManager.inMemory(repoDir),
     }));
     await session.bindExtensions({});
+    assert.match(session.systemPrompt, /ask once whether to form a team/);
+    assert.match(session.systemPrompt, /Wait for approval before creating a team/);
+    assert.match(session.systemPrompt, /user declines/);
+    assert.match(session.systemPrompt, /inheriting its original team/);
     const code = `
+      const exists = "intercom_send" in tools;
+      let unknownMemberRejected = false;
+      try { typeof tools.intercom_sned; } catch (error) { unknownMemberRejected = true; }
       const status = await tools.intercom_status({});
       const failure = await tools.intercom_send({ to: "missing-sandbox-recipient", message: "test" });
       const sent = await tools.intercom_send({ to: "planner", message: "real codemode sandbox" });
-      return { connected: status.data.connected, failure: failure.ok, delivered: sent.data.delivered };
+      return { exists, unknownMemberRejected, connected: status.data.connected, failure: failure.ok, delivered: sent.data.delivered };
     `;
     // Supply a synthetic assistant call, exercising real nested hooks and QuickJS without a paid model request.
     session.sessionManager.appendMessage({
@@ -2121,6 +2128,8 @@ test("Pi 0.99 codemode sandbox receives structured success and error results", {
     assert.ok(tool, "codemode must be active");
     const result = await tool.execute("sandbox-call", { code }, new AbortController().signal);
     const text = result.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+    assert.match(text, /"exists":true/);
+    assert.match(text, /"unknownMemberRejected":true/);
     assert.match(text, /"connected":true/);
     assert.match(text, /"failure":false/);
     assert.match(text, /"delivered":true/);
@@ -4546,8 +4555,9 @@ test("/intercom-create and intercom_join form a team without tmux", { concurrenc
     assert.equal(teams[0]?.name, "billing");
     assert.equal(teams[0]?.managerSessionId, plannerSessionId);
     const teamScope = teams[0]!.scopeId;
-    assert.equal(process.env.AGENT_INTERCOM_SCOPE_ID, teamScope);
-    assert.equal(process.env.AGENT_INTERCOM_MANAGER_TARGET, plannerSessionId);
+    assert.equal(process.env.AGENT_INTERCOM_SCOPE_ID, undefined);
+    assert.equal(process.env.AGENT_INTERCOM_MANAGER_TARGET, undefined);
+    assert.deepEqual(teams[0]?.memberSessionIds, [plannerSessionId]);
 
     const joinTool = plannerHarness.tools.find((tool) => tool.name === "intercom_join")!;
     const listed = await joinTool.execute("join-list", {}, new AbortController().signal, undefined, plannerHarness.ctx);
@@ -4558,34 +4568,15 @@ test("/intercom-create and intercom_join form a team without tmux", { concurrenc
     const beforeWorker = await teamTool.execute("team-before-worker", {}, new AbortController().signal, undefined, plannerHarness.ctx);
     assert.match(beforeWorker.content[0]?.text ?? "", /You: .* \[manager\]/);
 
-    const scopedPeer = new IntercomClient({ scopeId: teamScope });
-    scopedPeer.on("message", (_from, _message, deliveryId: string) => {
-      scopedPeer.acknowledgeMessage(deliveryId);
-    });
-    try {
-      await scopedPeer.connect({
-        name: "scope-checker",
-        cwd: repoDir,
-        model: "test-model",
-        pid: process.pid,
-        startedAt: Date.now(),
-        lastActivity: Date.now(),
-      }, "scope-checker-id");
-      await waitForSessionByName(scopedPeer, "named-planner");
-      assert.equal((await planner.listSessions()).some((session) => session.name === "named-planner"), false);
-
-      await workerHarness.emitLifecycle("session_start");
-      await waitForSessionByName(planner, "named-worker");
-      const workerJoin = workerHarness.tools.find((tool) => tool.name === "intercom_join")!;
-      const joined = await workerJoin.execute("join-billing", { name: "billing" }, new AbortController().signal, undefined, workerHarness.ctx);
-      assert.match(joined.content[0]?.text ?? "", /Joined team billing/);
-      assert.doesNotMatch(joined.content[0]?.text ?? "", new RegExp(teamScope));
-      assert.equal(process.env.AGENT_INTERCOM_SCOPE_ID, teamScope);
-      await waitForSessionByName(scopedPeer, "named-worker");
-      assert.equal((await planner.listSessions()).some((session) => session.name === "named-worker"), false);
-    } finally {
-      await scopedPeer.disconnect().catch(() => undefined);
-    }
+    assert.equal((await planner.listSessions()).some((session) => session.name === "named-planner"), true);
+    await workerHarness.emitLifecycle("session_start");
+    await waitForSessionByName(planner, "named-worker");
+    const workerJoin = workerHarness.tools.find((tool) => tool.name === "intercom_join")!;
+    const joined = await workerJoin.execute("join-billing", { name: "billing" }, new AbortController().signal, undefined, workerHarness.ctx);
+    assert.match(joined.content[0]?.text ?? "", /Joined team billing/);
+    assert.doesNotMatch(joined.content[0]?.text ?? "", new RegExp(teamScope));
+    assert.equal(process.env.AGENT_INTERCOM_SCOPE_ID, undefined);
+    assert.equal((await planner.listSessions()).some((session) => session.name === "named-worker"), true);
 
     const afterWorker = await teamTool.execute("team-after-worker", {}, new AbortController().signal, undefined, plannerHarness.ctx);
     const afterText = afterWorker.content[0]?.text ?? "";
@@ -4595,8 +4586,7 @@ test("/intercom-create and intercom_join form a team without tmux", { concurrenc
 
     await plannerHarness.commands.get("intercom-status")!("", plannerHarness.ctx);
     const status = notices.at(-1) ?? "";
-    assert.match(status, /^same-scope\n/);
-    assert.match(status, /Team: billing/);
+    assert.match(status, /^Task teams: billing/);
     assert.doesNotMatch(status, new RegExp(teamScope));
   } finally {
     if (previousLang === undefined) delete process.env.LANG;
@@ -4611,6 +4601,131 @@ test("/intercom-create and intercom_join form a team without tmux", { concurrenc
     rmSync(path.join(sharedHomeDir, ".pi", "agent", "intercom", "named-teams.json"), { force: true });
     await workerHarness.emitLifecycle("session_shutdown");
     await plannerHarness.emitLifecycle("session_shutdown");
+    await cleanup();
+  }
+});
+
+test("four independent Pi runtimes form overlapping task teams and replies inherit exact team context", { concurrency: false }, async () => {
+  const { default: extension } = await import("./index.ts");
+  const { listNamedTeams } = await import("./named-teams.ts");
+  const { replyContextId } = await import("./reply-tracker.ts");
+  const { planner, cleanup } = await setupClients();
+  const registry = path.join(sharedHomeDir, ".pi", "agent", "intercom", "named-teams.json");
+  const harnesses = ["", "front", "writer", "reviewer"].map((name, index) => createExtensionHarness(name, { sessionId: `manual-pi-${index}` }));
+  const [lead, front, writer, reviewer] = harnesses as [ReturnType<typeof createExtensionHarness>, ReturnType<typeof createExtensionHarness>, ReturnType<typeof createExtensionHarness>, ReturnType<typeof createExtensionHarness>];
+  const call = (harness: typeof lead, tool: string, args: Record<string, unknown> = {}) => harness.tools.find((entry) => entry.name === tool)!.execute(`experiment-${tool}`, args, new AbortController().signal, undefined, harness.ctx);
+  const until = async (predicate: () => boolean) => {
+    for (let i = 0; i < 60 && !predicate(); i++) await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.ok(predicate(), "expected inbound message to be flushed");
+  };
+  try {
+    rmSync(registry, { force: true });
+    delete process.env.AGENT_INTERCOM_SCOPE_ID;
+    delete process.env.AGENT_INTERCOM_MANAGER_TARGET;
+    for (const harness of harnesses) {
+      delete process.env.PI_INTERCOM_SESSION_ID;
+      extension(harness.pi as never);
+    }
+    for (const harness of harnesses) {
+      await harness.emitLifecycle("session_start");
+      await call(harness, "intercom_status");
+    }
+    assert.equal(listNamedTeams().length, 0, "launching Pi must not silently form a team");
+    assert.equal((await planner.listSessions()).filter((entry) => entry.id.startsWith("manual-pi-")).length, 4);
+    const joinGuidelines = (lead.tools.find((entry) => entry.name === "intercom_join") as unknown as { promptGuidelines: string[] }).promptGuidelines.join("\n");
+    assert.match(joinGuidelines, /ask once.*form a team/);
+    assert.match(joinGuidelines, /Wait for approval/);
+    assert.match(joinGuidelines, /user declines/);
+    assert.match(joinGuidelines, /inbound team-message turn/);
+
+    const invalid = await call(lead, "intercom_join", { name: "bad", create: true, members: ["front", "not-connected"] });
+    assert.equal(invalid.details?.error, true);
+    assert.equal(listNamedTeams().length, 0, "failed target resolution must not partially form a team");
+    const created = await call(lead, "intercom_join", { name: "launch", create: true, members: ["front", "writer"], work: "Ship the product page" });
+    assert.notEqual(created.details?.error, true);
+    assert.deepEqual(listNamedTeams()[0]?.memberSessionIds, ["manual-pi-0", "manual-pi-1", "manual-pi-2"]);
+    const initialContact = await call(lead, "intercom_send", { to: "reviewer", message: "Would you like to work together on a review task?" });
+    assert.equal(initialContact.details?.delivered, true);
+    assert.equal(initialContact.details?.team, undefined);
+    await until(() => reviewer.sentMessages.length > 0);
+    const contactEntries = (reviewer.sentMessages[0]!.message.details as { entries: Array<{ message: Message }> }).entries;
+    assert.equal(contactEntries[0]?.message.content.team, undefined);
+    assert.equal(listNamedTeams().length, 1, "initial contact must not silently create a team");
+    assert.deepEqual(listNamedTeams()[0]?.memberSessionIds, ["manual-pi-0", "manual-pi-1", "manual-pi-2"]);
+    const second = await call(reviewer, "intercom_join", { name: "review", create: true, members: ["front", "writer"], work: "Review the homepage" });
+    assert.notEqual(second.details?.error, true);
+    await call(lead, "intercom_join", { name: "review" });
+    const frontTeams = await call(front, "intercom_team");
+    assert.match(frontTeams.content[0]?.text ?? "", /Team: launch/);
+    assert.match(frontTeams.content[0]?.text ?? "", /Team: review/);
+    assert.match(frontTeams.content[0]?.text ?? "", /Manager: manual-pi-0/);
+    assert.match(frontTeams.content[0]?.text ?? "", /Manager: manual-pi-3/);
+    assert.equal(process.env.AGENT_INTERCOM_SCOPE_ID, undefined);
+    assert.equal((await planner.listSessions()).filter((entry) => entry.id.startsWith("manual-pi-")).length, 4);
+
+    const ambiguous = await call(lead, "intercom_send", { to: "writer", message: "Which task?" });
+    assert.equal(ambiguous.details?.error, true);
+    assert.match(ambiguous.content[0]?.text ?? "", /Multiple shared teams/);
+    const denied = await call(lead, "intercom_send", { to: "reviewer", team: "launch", message: "Not a member" });
+    assert.equal(denied.details?.error, true);
+    const sent = await Promise.all([
+      call(lead, "intercom_send", { to: "writer", team: "launch", message: "Write the release copy" }),
+      call(lead, "intercom_send", { to: "writer", team: "review", message: "Review the homepage copy" }),
+    ]);
+    assert.ok(sent.every((result) => result.details?.delivered === true));
+    await until(() => writer.sentMessages.length > 0);
+    const batch = writer.sentMessages[0]!.message;
+    assert.match(batch.content ?? "", /\[Team: launch\]/);
+    assert.match(batch.content ?? "", /\[Team: review\]/);
+    const entries = (batch.details as { entries: Array<{ from: SessionInfo; message: Message }> }).entries;
+    assert.equal(entries.length, 2);
+    await writer.emitLifecycle("turn_start");
+    const ambiguousReply = await call(writer, "intercom_reply", { message: "Done" });
+    assert.equal(ambiguousReply.details?.error, true);
+    assert.match(ambiguousReply.content[0]?.text ?? "", /multiple teams/);
+    const launchEntry = entries.find((entry) => entry.message.content.team === "launch")!;
+    const launchContext = replyContextId(launchEntry.from.id, launchEntry.message.id);
+    const wrongTeam = await call(writer, "intercom_reply", { contextId: launchContext, team: "review", message: "Wrong route" });
+    assert.equal(wrongTeam.details?.error, true);
+    const launchReply = await call(writer, "intercom_reply", { contextId: launchContext, message: "Release copy done" });
+    assert.equal(launchReply.details?.team, "launch");
+    const reviewEntry = entries.find((entry) => entry.message.content.team === "review")!;
+    const reviewReply = await call(writer, "intercom_reply", { contextId: replyContextId(reviewEntry.from.id, reviewEntry.message.id), message: "Homepage copy reviewed" });
+    assert.equal(reviewReply.details?.team, "review");
+    await until(() => lead.sentMessages.length > 0);
+    const replies = lead.sentMessages.flatMap((entry) => (entry.message.details as { entries: Array<{ message: Message }> }).entries);
+    assert.equal(replies.find((entry) => entry.message.content.text === "Release copy done")?.message.content.team, "launch");
+    assert.equal(replies.find((entry) => entry.message.content.text === "Homepage copy reviewed")?.message.content.team, "review");
+
+    const forged = await planner.send("manual-pi-2", { team: "launch", text: "Pretending to be a member" });
+    assert.equal(forged.delivered, false);
+    assert.match(forged.reason ?? "", /Both sessions must belong/);
+    await writer.emitLifecycle("agent_end");
+    const askResult = call(reviewer, "intercom_ask", { to: "writer", team: "review", message: "Can we publish the homepage?" });
+    await until(() => writer.sentMessages.length > 1);
+    const beforeReload = await call(writer, "intercom_pending");
+    assert.match(beforeReload.content[0]?.text ?? "", /Team: review/);
+    const askId = (beforeReload.details?.asks as Array<{ id: string; team: string }>)[0]!.id;
+    await writer.emitLifecycle("session_shutdown");
+    delete process.env.PI_INTERCOM_SESSION_ID;
+    const resumedWriter = createExtensionHarness("writer", { sessionId: "manual-pi-2" });
+    harnesses.push(resumedWriter);
+    extension(resumedWriter.pi as never);
+    await resumedWriter.emitLifecycle("session_start");
+    const pendingAfterReload = await call(resumedWriter, "intercom_pending", { askId });
+    assert.match(pendingAfterReload.content[0]?.text ?? "", /Team: review/);
+    const answered = await call(resumedWriter, "intercom_reply", { askId, message: "Yes, publish the reviewed homepage" });
+    assert.equal(answered.details?.team, "review");
+    const answer = await askResult;
+    assert.equal(answer.details?.team, "review");
+    assert.match(answer.content[0]?.text ?? "", /\[Team: review\]/);
+    assert.match(answer.content[0]?.text ?? "", /Yes, publish/);
+  } finally {
+    for (const harness of harnesses) await harness.emitLifecycle("session_shutdown");
+    rmSync(registry, { force: true });
+    delete process.env.PI_INTERCOM_SESSION_ID;
+    delete process.env.AGENT_INTERCOM_SCOPE_ID;
+    delete process.env.AGENT_INTERCOM_MANAGER_TARGET;
     await cleanup();
   }
 });

@@ -21,6 +21,8 @@ test("published package includes presentation assets and excludes tests", () => 
   assert.ok(paths.includes("inbound-inbox.ts"));
   assert.ok(paths.includes("outbound-outbox.ts"));
   assert.ok(paths.includes("durable-json.ts"));
+  assert.ok(paths.includes("named-team-membership.ts"));
+  assert.ok(paths.includes("skills/pi-intercom/SKILL.md"));
   assert.ok(paths.includes("tool-result.ts"));
   assert.ok(paths.includes("cli-send.ts"));
   assert.ok(paths.includes("bin/intercom-send.mjs"));
@@ -55,15 +57,15 @@ test("packed runtime installs the exact Core build without an SSH dependency", (
   }
 
   for (const name of ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "typebox"]) {
-    assert.notEqual(manifest.dependencies?.[name], undefined);
-    assert.equal(manifest.peerDependencies?.[name], undefined);
-    assert.equal(manifest.devDependencies?.[name], undefined);
+    assert.equal(manifest.dependencies?.[name], undefined);
+    assert.equal(manifest.peerDependencies?.[name], "*");
+    assert.notEqual(manifest.devDependencies?.[name], undefined);
   }
 
   const lockData = JSON.parse(lock) as { packages: Record<string, Record<string, unknown>> };
   for (const name of ["pi-ai", "pi-coding-agent", "pi-tui"]) {
-    assert.equal(manifest.dependencies[`@earendil-works/${name}`], "^0.99.1");
-    assert.equal(lockData.packages[`node_modules/@earendil-works/${name}`].version, "0.99.1");
+    assert.equal(manifest.devDependencies[`@earendil-works/${name}`], "^1.0.0");
+    assert.equal(lockData.packages[`node_modules/@earendil-works/${name}`].version, "1.0.0");
   }
   const coreEntry = lockData.packages["node_modules/@ctliz/agent-intercom-core"];
   assert.ok(coreEntry, "Core package entry missing from lockfile");

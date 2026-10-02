@@ -14,6 +14,9 @@ export interface NamedTeam {
   scopeId: string;
   managerSessionId: string;
   createdAt: number;
+  /** Pi task-team membership; absent in legacy single-scope teams. */
+  memberSessionIds?: string[];
+  work?: string;
 }
 
 export type JoinableCircleKind = "named" | "tmuxdeck";
@@ -57,11 +60,20 @@ function parseStoredTeam(value: unknown): NamedTeam | undefined {
   if (typeof value.createdAt !== "number" || !Number.isSafeInteger(value.createdAt) || value.createdAt <= 0) {
     return undefined;
   }
+  if (value.memberSessionIds !== undefined && (
+    !Array.isArray(value.memberSessionIds)
+    || !value.memberSessionIds.every((id) => typeof id === "string" && id.trim() === id && id.length > 0 && !/[\u0000-\u001f\u007f]/.test(id))
+    || new Set(value.memberSessionIds).size !== value.memberSessionIds.length
+    || !value.memberSessionIds.includes(value.managerSessionId)
+  )) return undefined;
+  if (value.work !== undefined && (typeof value.work !== "string" || !value.work.trim() || value.work.length > 2000)) return undefined;
   return {
     name: value.name,
     scopeId: value.scopeId,
     managerSessionId: value.managerSessionId,
     createdAt: value.createdAt,
+    ...(value.memberSessionIds === undefined ? {} : { memberSessionIds: value.memberSessionIds as string[] }),
+    ...(value.work === undefined ? {} : { work: value.work as string }),
   };
 }
 
