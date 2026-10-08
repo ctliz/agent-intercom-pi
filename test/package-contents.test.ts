@@ -44,6 +44,8 @@ test("releases publish only the supported Pi npm name", () => {
   assert.ok(workflow.includes('test "$PACKAGE_NAME" = "@ctliz/pi-intercom"'));
   assert.equal(workflow.match(/^\s+npm publish\b/gm)?.length, 1);
   assert.doesNotMatch(workflow, /Publish Pi alias|pkg\.name\s*=/);
+  // Trusted publishing must not get a placeholder registry token from setup-node.
+  assert.doesNotMatch(workflow, /registry-url:|NODE_AUTH_TOKEN/);
 });
 
 test("protected provider is not an extension or executable; the CLI only sends messages", () => {

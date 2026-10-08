@@ -31,7 +31,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22.19.0
-          registry-url: https://registry.npmjs.org
 
       - name: Use an npm version with trusted publishing support
         run: npm install --global npm@11.16.0
@@ -72,7 +71,7 @@ jobs:
             echo "$PACKAGE_NAME@$PACKAGE_VERSION is already published; skipping."
           else
             PUBLISH_TAG="$(node -p "require('./package.json').version.includes('-') ? require('./package.json').version.split('-')[1].split('.')[0] : 'latest'")"
-            npm publish --access public --provenance --tag "$PUBLISH_TAG"
+            npm publish --registry=https://registry.npmjs.org/ --access public --provenance --tag "$PUBLISH_TAG" --loglevel=verbose
           fi
 
       - name: Create GitHub release
