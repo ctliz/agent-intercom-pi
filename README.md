@@ -17,9 +17,9 @@
 | AGY | [`agent-intercom-agy`](https://github.com/ctliz/agent-intercom-agy) |
 | Fleet lifecycle | [`agent-intercom-orchestrator`](https://github.com/ctliz/agent-intercom-orchestrator) |
 
-## Pi 1.0 compatibility and codemode
+## Pi 1.1 compatibility and codemode
 
-Version 0.14.0 is tested with Pi 1.0.0. The preceding 0.13.0 release was tested with Pi 0.99.1. The development test baseline now uses Pi 1.0.0; host-provided Pi modules remain peer dependencies, not runtime dependencies. The existing protocol v4 broker, durable queues, acknowledgements, and cross-harness routing are unchanged.
+Version 0.14.1 is tested with Pi 1.1.0. Version 0.14.0 was tested with Pi 1.0.0, and 0.13.0 with Pi 0.99.1. The development test baseline now uses Pi 1.1.0; host-provided Pi modules remain peer dependencies, not runtime dependencies. The existing protocol v4 broker, durable queues, acknowledgements, and cross-harness routing are unchanged.
 
 Pi 1.0 defaults to fullscreen; set `tuiMode` to `"regular"` or launch with `--tui-mode regular` to retain terminal scrollback. Codemode's shorter declarations preserve Intercom's structured `{ ok, text, data }` results and team guidelines. To check tool existence in a script, use `"intercom_send" in tools`, not `typeof tools.intercom_send`, because unknown members now throw. Restart existing Pi processes to use a newly installed Pi version; `/reload` only reloads resources inside the running version.
 
@@ -789,7 +789,7 @@ Custom broker commands are trusted local configuration: anyone who can edit this
 }
 ```
 
-Pi-intercom publishes live session status automatically. Sessions register as `idle`, switch to `thinking` while the agent is running, show `tool:<name>` during tool execution, and return to `idle` on agent completion. If `status` is set in config, it is appended as context instead of replacing the lifecycle status.
+Pi-intercom publishes live session status automatically. Sessions register as `idle`, switch to `thinking` while the agent is running, and show `tool:<name>` during tool execution. They remain busy through automatic retries, compaction, and queued continuations until `agent_settled`. Normal settlement returns to `idle`; on Pi 1.1.0 or newer, `aborted: true` shows `cancelled` until the next run or session start. Older hosts without the `aborted` field continue to show `idle` after settlement. If `status` is set in config, it is appended as context instead of replacing the lifecycle status.
 
 By default, runtime state and config live under `~/.pi/agent/intercom`. If Pi is launched with `PI_CODING_AGENT_DIR`, pi-intercom uses `$PI_CODING_AGENT_DIR/intercom` instead, including `config.json`, broker PID/lock files, sockets, durable inboxes/outboxes, ask state, and launcher state. `PI_INTERCOM_ASK_WAIT_MS` controls the foreground ask wait (30 seconds by default); `PI_INTERCOM_ASK_TIMEOUT_MS` controls how long a deferred ask remains replyable (10 minutes by default).
 

@@ -721,6 +721,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   let runtimeStarted = false;
   let runtimeGeneration = 0;
   let agentRunning = false;
+  let lastRunAborted = false;
   const activeTools = new Map<string, string>();
   const replyTracker = new ReplyTracker();
   const registeredControlTypes = new Set<string>();
@@ -848,7 +849,8 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   function currentStatus(): string {
     const activeToolName = activeTools.values().next().value;
     const busy = agentRunning || getLiveContext()?.isIdle() === false;
-    const lifecycleStatus = activeToolName ? `tool:${activeToolName}` : busy ? "thinking" : "idle";
+    const settledStatus = lastRunAborted ? "cancelled" : "idle";
+    const lifecycleStatus = activeToolName ? `tool:${activeToolName}` : busy ? "thinking" : settledStatus;
     const queueStatus = inboundInbox?.size ? ` · inbox:${inboundInbox.size}` : "";
     const outboxStatus = client?.outboxSize ? ` · outbox:${client.outboxSize}` : "";
     return config.status ? `${lifecycleStatus}${queueStatus}${outboxStatus} · ${config.status}` : `${lifecycleStatus}${queueStatus}${outboxStatus}`;
@@ -1594,6 +1596,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     runtimeInstanceId = randomUUID();
     lastPresenceName = buildPresenceIdentity(pi, currentSessionId).name;
     agentRunning = false;
+    lastRunAborted = false;
     activeTools.clear();
     startNamePoll();
     if (authorizedRecovered.length > 0) scheduleInboundFlush(0);
@@ -1823,6 +1826,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     inboundLastQueuedAt = null;
     controlRegistrationGraceUntil = 0;
     agentRunning = false;
+    lastRunAborted = false;
     activeTools.clear();
     if (client) {
       await client.disconnect(true);
@@ -1844,6 +1848,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       return;
     }
     agentRunning = true;
+    lastRunAborted = false;
     activeTools.clear();
     syncPresenceStatus();
   });
@@ -1864,14 +1869,15 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   pi.on("agent_end", (_event, ctx) => {
     if (!getLiveContext(ctx)) return;
     replyTracker.endTurn();
-    agentRunning = !ctx.isIdle();
+    // Only agent_settled ends the busy state; retries and continuations can still follow.
     activeTools.clear();
     syncPresenceStatus();
     scheduleInboundFlush(0);
   });
-  pi.on("agent_settled", (_event, ctx) => {
+  pi.on("agent_settled", (event, ctx) => {
     if (!getLiveContext(ctx)) return;
     agentRunning = false;
+    lastRunAborted = event.aborted === true;
     activeTools.clear();
     syncPresenceStatus();
     scheduleInboundFlush(0);

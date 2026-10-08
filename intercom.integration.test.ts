@@ -2260,8 +2260,52 @@ test("sessions publish automatic lifecycle status", { concurrency: false }, asyn
     await harness.emitLifecycle("tool_execution_end", { toolCallId: "tool-2", toolName: "read" });
     await waitForSessionStatus(planner, "status-worker", "thinking");
 
-    await harness.emitLifecycle("agent_end");
+    const listTool = harness.tools.find((tool) => tool.name === "intercom_list")!;
+    for (let run = 0; run < 2; run += 1) {
+      await harness.emitLifecycle("agent_end");
+      // The list request shares the presence connection, so it cannot observe a stale update.
+      const listed = await listTool.execute("list-status", {}, new AbortController().signal, undefined, harness.ctx);
+      const self = (listed.structuredContent?.data.sessions as SessionInfo[]).find((session) => session.name === "status-worker");
+      assert.equal(self?.status, "thinking");
+      if (run === 0) await harness.emitLifecycle("agent_start");
+    }
+    await harness.emitLifecycle("agent_settled", { aborted: false });
     await waitForSessionStatus(planner, "status-worker", "idle");
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
+    await cleanup();
+  }
+});
+
+test("cancelled session status clears on the next run or session start", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const { planner, cleanup } = await setupClients();
+  const harness = createExtensionHarness("cancelled-status-worker", { hasUI: true });
+
+  try {
+    piIntercomExtension(harness.pi as never);
+    await harness.emitLifecycle("session_start");
+    await waitForSessionStatus(planner, "cancelled-status-worker", "idle");
+
+    await harness.emitLifecycle("agent_start");
+    await harness.emitLifecycle("tool_execution_start", { toolCallId: "cancelled-tool", toolName: "bash" });
+    await waitForSessionStatus(planner, "cancelled-status-worker", "tool:bash");
+    await harness.emitLifecycle("agent_end");
+    await harness.emitLifecycle("agent_settled", { aborted: true });
+    await waitForSessionStatus(planner, "cancelled-status-worker", "cancelled");
+
+    await harness.emitLifecycle("agent_start");
+    await waitForSessionStatus(planner, "cancelled-status-worker", "thinking");
+    await harness.emitLifecycle("agent_end");
+    await harness.emitLifecycle("agent_settled", { aborted: false });
+    await waitForSessionStatus(planner, "cancelled-status-worker", "idle");
+
+    await harness.emitLifecycle("agent_start");
+    await harness.emitLifecycle("agent_end");
+    await harness.emitLifecycle("agent_settled", { aborted: true });
+    await waitForSessionStatus(planner, "cancelled-status-worker", "cancelled");
+    await harness.emitLifecycle("session_start");
+    await waitForSessionStatus(planner, "cancelled-status-worker", "idle");
   } finally {
     await harness.emitLifecycle("session_shutdown");
     await cleanup();

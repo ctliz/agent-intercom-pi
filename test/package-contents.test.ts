@@ -64,8 +64,8 @@ test("packed runtime installs the exact Core build without an SSH dependency", (
 
   const lockData = JSON.parse(lock) as { packages: Record<string, Record<string, unknown>> };
   for (const name of ["pi-ai", "pi-coding-agent", "pi-tui"]) {
-    assert.equal(manifest.devDependencies[`@earendil-works/${name}`], "^1.0.0");
-    assert.equal(lockData.packages[`node_modules/@earendil-works/${name}`].version, "1.0.0");
+    assert.equal(manifest.devDependencies[`@earendil-works/${name}`], "^1.1.0");
+    assert.equal(lockData.packages[`node_modules/@earendil-works/${name}`].version, "1.1.0");
   }
   const coreEntry = lockData.packages["node_modules/@ctliz/agent-intercom-core"];
   assert.ok(coreEntry, "Core package entry missing from lockfile");

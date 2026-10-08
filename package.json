@@ -1,6 +1,6 @@
 {
   "name": "@ctliz/agent-intercom-pi",
-  "version": "0.14.0",
+  "version": "0.14.1",
   "description": "Pi coding-agent intercom for local messaging with Codex, Claude Code, OpenCode, Grok Build, and AGY agents.",
   "license": "AGPL-3.0-or-later",
   "type": "module",
@@ -67,9 +67,9 @@
     "typebox": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "^1.0.0",
-    "@earendil-works/pi-coding-agent": "^1.0.0",
-    "@earendil-works/pi-tui": "^1.0.0",
+    "@earendil-works/pi-ai": "^1.1.0",
+    "@earendil-works/pi-coding-agent": "^1.1.0",
+    "@earendil-works/pi-tui": "^1.1.0",
     "@types/node": "^22.15.0",
     "typebox": "*",
     "typescript": "^5.9.3"

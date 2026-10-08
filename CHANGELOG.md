@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.14.1 - 2026-10-09
+
+- Keep session presence busy until `agent_settled`, including automatic retries, compaction, and queued continuations.
+- Show `cancelled` for `agent_settled.aborted` runs on Pi 1.1.0 or newer; clear it on the next run or session start. Older hosts without the field retain their settled `idle` behavior.
+- Update the development and release-test baseline to Pi 1.1.0. Preserve host-provided peer dependencies, Pi task teams, and protocol v4 behavior.
+
 ## 0.14.0 - 2026-10-02
 
 - Add Pi-local task teams with persistent, additive membership. A manager can create a team and add connected named or unnamed sessions in one operation; each session can belong to multiple teams with different managers.
