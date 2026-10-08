@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.14.2 - 2026-10-09
+
+- Use `@ctliz/pi-intercom` as the only npm release name. Stop publishing the former `@ctliz/agent-intercom-pi` name without deleting historical versions.
+- Remove the second alias-publishing step and reject release manifests with a different npm name.
+- Document updates under the existing Pi package name, safe migration from the former name, and the required npm trusted-publisher configuration.
+- Preserve the historical protected-provider identity and protocol v4 contracts; no broker or session migration is required.
+
 ## 0.14.1 - 2026-10-09
 
 - Keep session presence busy until `agent_settled`, including automatic retries, compaction, and queued continuations.

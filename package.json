@@ -1,6 +1,6 @@
 {
-  "name": "@ctliz/agent-intercom-pi",
-  "version": "0.14.1",
+  "name": "@ctliz/pi-intercom",
+  "version": "0.14.2",
   "description": "Pi coding-agent intercom for local messaging with Codex, Claude Code, OpenCode, Grok Build, and AGY agents.",
   "license": "AGPL-3.0-or-later",
   "type": "module",

@@ -8,7 +8,8 @@ test("published package includes presentation assets and excludes tests", () => 
     cwd: new URL("..", import.meta.url),
     encoding: "utf8",
   });
-  const [pack] = JSON.parse(output) as Array<{ files: Array<{ path: string }> }>;
+  const [pack] = JSON.parse(output) as Array<{ name: string; files: Array<{ path: string }> }>;
+  assert.equal(pack.name, "@ctliz/pi-intercom");
   const paths = pack.files.map(file => file.path);
 
   assert.ok(paths.includes("banner.png"));
@@ -27,6 +28,22 @@ test("published package includes presentation assets and excludes tests", () => 
   assert.ok(paths.includes("cli-send.ts"));
   assert.ok(paths.includes("bin/intercom-send.mjs"));
   assert.equal(paths.some(path => path.endsWith(".test.ts")), false);
+});
+
+test("releases publish only the supported Pi npm name", () => {
+  const root = new URL("..", import.meta.url);
+  const manifest = JSON.parse(readFileSync(new URL("package.json", root), "utf8"));
+  const lock = JSON.parse(readFileSync(new URL("package-lock.json", root), "utf8"));
+  const workflow = readFileSync(new URL(".github/workflows/release.yml", root), "utf8");
+
+  assert.equal(manifest.name, "@ctliz/pi-intercom");
+  assert.equal(lock.name, manifest.name);
+  assert.equal(lock.packages[""].name, manifest.name);
+  assert.equal(lock.version, manifest.version);
+  assert.equal(lock.packages[""].version, manifest.version);
+  assert.ok(workflow.includes('test "$PACKAGE_NAME" = "@ctliz/pi-intercom"'));
+  assert.equal(workflow.match(/^\s+npm publish\b/gm)?.length, 1);
+  assert.doesNotMatch(workflow, /Publish Pi alias|pkg\.name\s*=/);
 });
 
 test("protected provider is not an extension or executable; the CLI only sends messages", () => {

@@ -41,6 +41,8 @@ jobs:
         run: |
           RELEASE_TAG="${{ inputs.tag || github.ref_name }}"
           TAG_VERSION="${RELEASE_TAG#v}"
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
+          test "$PACKAGE_NAME" = "@ctliz/pi-intercom"
           PACKAGE_VERSION="$(node -p "require('./package.json').version")"
           test "$RELEASE_TAG" = "v$PACKAGE_VERSION"
           test "$TAG_VERSION" = "$PACKAGE_VERSION"
@@ -72,31 +74,6 @@ jobs:
             PUBLISH_TAG="$(node -p "require('./package.json').version.includes('-') ? require('./package.json').version.split('-')[1].split('.')[0] : 'latest'")"
             npm publish --access public --provenance --tag "$PUBLISH_TAG"
           fi
-
-      - name: Publish Pi alias to npm
-        shell: bash
-        run: |
-          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
-          if npm view "@ctliz/pi-intercom@$PACKAGE_VERSION" version >/dev/null 2>&1; then
-            echo "@ctliz/pi-intercom@$PACKAGE_VERSION is already published; skipping."
-            exit 0
-          fi
-          npm run build:protected-provider
-          STAGE="$(mktemp -d)"
-          trap 'rm -rf "$STAGE"' EXIT
-          npm pack --ignore-scripts --json --pack-destination "$STAGE" > "$STAGE/pack.json"
-          TARBALL="$(node -p "require('$STAGE/pack.json')[0].filename")"
-          tar -xzf "$STAGE/$TARBALL" -C "$STAGE"
-          node - "$STAGE/package/package.json" <<'NODE'
-          const fs = require('node:fs');
-          const file = process.argv[2];
-          const pkg = JSON.parse(fs.readFileSync(file, 'utf8'));
-          pkg.name = '@ctliz/pi-intercom';
-          fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + '\n');
-          NODE
-          PUBLISH_TAG="$(node -p "require('./package.json').version.includes('-') ? require('./package.json').version.split('-')[1].split('.')[0] : 'latest'")"
-          cd "$STAGE/package"
-          npm publish --ignore-scripts --access public --provenance --tag "$PUBLISH_TAG"
 
       - name: Create GitHub release
         env:

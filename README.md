@@ -19,7 +19,7 @@
 
 ## Pi 1.1 compatibility and codemode
 
-Version 0.14.1 is tested with Pi 1.1.0. Version 0.14.0 was tested with Pi 1.0.0, and 0.13.0 with Pi 0.99.1. The development test baseline now uses Pi 1.1.0; host-provided Pi modules remain peer dependencies, not runtime dependencies. The existing protocol v4 broker, durable queues, acknowledgements, and cross-harness routing are unchanged.
+Version 0.14.2 is tested with Pi 1.1.0. Version 0.14.0 was tested with Pi 1.0.0, and 0.13.0 with Pi 0.99.1. The development test baseline now uses Pi 1.1.0; host-provided Pi modules remain peer dependencies, not runtime dependencies. The existing protocol v4 broker, durable queues, acknowledgements, and cross-harness routing are unchanged.
 
 Pi 1.0 defaults to fullscreen; set `tuiMode` to `"regular"` or launch with `--tui-mode regular` to retain terminal scrollback. Codemode's shorter declarations preserve Intercom's structured `{ ok, text, data }` results and team guidelines. To check tool existence in a script, use `"intercom_send" in tools`, not `typeof tools.intercom_send`, because unknown members now throw. Restart existing Pi processes to use a newly installed Pi version; `/reload` only reloads resources inside the running version.
 
@@ -41,7 +41,7 @@ Concurrent sends and independent asks are supported; do not create two unresolve
 The package includes an `intercom-send` executable. Install the alias globally for a shell command, or run it without relying on Pi's private installation path:
 
 ```bash
-npm exec --yes --package=@ctliz/pi-intercom@0.14.0 -- intercom-send worker 'Tests passed.'
+npm exec --yes --package=@ctliz/pi-intercom@0.14.2 -- intercom-send worker 'Tests passed.'
 ```
 
 It prints one JSON result with `accepted`, `delivered`, `messageId`, and optional failure `code`/`reason`. Exit status is zero only for acknowledged delivery. It inherits the routing scope, but never inherits `PI_INTERCOM_SESSION_ID` or `AGENT_INTERCOM_SESSION_ID`: every invocation registers an independent sender, leaves running Pi sessions intact, and disconnects after sending. It is send-only; use the session tools for reply-tracked asks.
@@ -163,7 +163,18 @@ Each pi session that has `pi-intercom` loaded and enabled connects to a tiny loc
 ## Install
 
 ```bash
-pi install npm:@ctliz/pi-intercom@0.14.0
+pi install npm:@ctliz/pi-intercom
+```
+
+Starting with 0.14.2, `@ctliz/pi-intercom` is the only npm release name. The former `@ctliz/agent-intercom-pi` name receives no new versions; its published history remains available. The GitHub repository and existing Git sources remain unchanged.
+
+Existing `@ctliz/pi-intercom` users do not need to switch packages. Update with `pi update npm:@ctliz/pi-intercom`, then run `/reload` in open Pi sessions. If the configured source is pinned to a version, reinstall the unpinned source above to receive future update notifications.
+
+If you installed the former name, remove it before installing the supported name to avoid loading the same extension twice:
+
+```bash
+pi remove npm:@ctliz/agent-intercom-pi
+pi install npm:@ctliz/pi-intercom
 ```
 
 If you are coming from `connect.1`, read [Upgrading from `connect.1`](#upgrading-from-connect1-to-connect2) first — the package namespace changed and the two versions must not be installed side by side.
@@ -916,7 +927,7 @@ Use pi-messenger for multi-agent swarms working on a shared task. Use pi-interco
 
 The `connect.1` tags, source commits, and published release assets are immutable and are not modified by this migration. Release notes may carry an explicit erratum, which corrects the description only and never moves a tag or replaces an asset.
 
-These packages are not published on the npm registry yet; install from the GitHub tags shown above.
+The historical `connect.*` Git tags shown above remain available. For current Pi installations, use the npm package in [Install](#install).
 
 ## Limitations
 
@@ -939,10 +950,11 @@ git tag -a vX.Y.Z -m "vX.Y.Z"
 git push origin vX.Y.Z
 ```
 
-The release workflow verifies that the tag points into `main`, runs typecheck and
-tests, publishes the public npm package with trusted OIDC provenance, and creates
-the GitHub Release. Existing npm versions and GitHub Releases are skipped safely
-when a workflow is rerun.
+The release workflow verifies that the tag points into `main` and the manifest name is `@ctliz/pi-intercom`, runs typecheck and tests, publishes that one npm package with trusted OIDC provenance, and creates the GitHub Release. It does not publish or rewrite a second alias. Existing npm versions and GitHub Releases are skipped safely when a workflow is rerun.
+
+The npm trusted publisher must be configured on **`@ctliz/pi-intercom`** for GitHub owner `ctliz`, repository `agent-intercom-pi`, workflow filename `release.yml`, with no environment name (this workflow does not use one). Authorization for the former npm name does not transfer to this package. Changing this account-side setting requires npm package-owner access; a repository commit alone cannot grant it.
+
+The historical protected-provider contract still uses its immutable `@ctliz/agent-intercom-pi` identity internally. That is a protocol compatibility identifier, not another npm publication or extension to install.
 
 ## License
 
