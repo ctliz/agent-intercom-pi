@@ -41,7 +41,7 @@ jobs:
           RELEASE_TAG="${{ inputs.tag || github.ref_name }}"
           TAG_VERSION="${RELEASE_TAG#v}"
           PACKAGE_NAME="$(node -p "require('./package.json').name")"
-          test "$PACKAGE_NAME" = "@ctliz/pi-intercom"
+          test "$PACKAGE_NAME" = "@ctliz/agent-intercom-pi"
           PACKAGE_VERSION="$(node -p "require('./package.json').version")"
           test "$RELEASE_TAG" = "v$PACKAGE_VERSION"
           test "$TAG_VERSION" = "$PACKAGE_VERSION"

@@ -2,7 +2,13 @@
 
 ## Unreleased
 
-## 0.14.2 - 2026-10-09
+## 0.14.3 - 2026-10-09
+
+- Keep `@ctliz/agent-intercom-pi` as the only supported npm release name. Stop publishing the `@ctliz/pi-intercom` alias while retaining its historical versions.
+- Supersede the unpublished 0.14.2 rename candidate; update installation, migration, release guards, and package checks to the supported name.
+- Use OIDC publishing without setup-node's placeholder registry token. Preserve Pi 1.1 cancellation status, task teams, codemode, and protocol v4.
+
+## 0.14.2 - 2026-10-09 (not published to npm)
 
 - Use `@ctliz/pi-intercom` as the only npm release name. Stop publishing the former `@ctliz/agent-intercom-pi` name without deleting historical versions.
 - Remove the second alias-publishing step and reject release manifests with a different npm name.

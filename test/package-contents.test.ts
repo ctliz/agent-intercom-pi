@@ -9,7 +9,7 @@ test("published package includes presentation assets and excludes tests", () => 
     encoding: "utf8",
   });
   const [pack] = JSON.parse(output) as Array<{ name: string; files: Array<{ path: string }> }>;
-  assert.equal(pack.name, "@ctliz/pi-intercom");
+  assert.equal(pack.name, "@ctliz/agent-intercom-pi");
   const paths = pack.files.map(file => file.path);
 
   assert.ok(paths.includes("banner.png"));
@@ -36,12 +36,12 @@ test("releases publish only the supported Pi npm name", () => {
   const lock = JSON.parse(readFileSync(new URL("package-lock.json", root), "utf8"));
   const workflow = readFileSync(new URL(".github/workflows/release.yml", root), "utf8");
 
-  assert.equal(manifest.name, "@ctliz/pi-intercom");
+  assert.equal(manifest.name, "@ctliz/agent-intercom-pi");
   assert.equal(lock.name, manifest.name);
   assert.equal(lock.packages[""].name, manifest.name);
   assert.equal(lock.version, manifest.version);
   assert.equal(lock.packages[""].version, manifest.version);
-  assert.ok(workflow.includes('test "$PACKAGE_NAME" = "@ctliz/pi-intercom"'));
+  assert.ok(workflow.includes('test "$PACKAGE_NAME" = "@ctliz/agent-intercom-pi"'));
   assert.equal(workflow.match(/^\s+npm publish\b/gm)?.length, 1);
   assert.doesNotMatch(workflow, /Publish Pi alias|pkg\.name\s*=/);
   // Trusted publishing must not get a placeholder registry token from setup-node.
