@@ -44,6 +44,8 @@ The package includes an `intercom-send` executable. Install the alias globally f
 npm exec --yes --package=@ctliz/agent-intercom-pi@0.14.3 -- intercom-send worker 'Tests passed.'
 ```
 
+The default command disconnects after delivery and cannot receive a later reply. For a shell handoff requiring an acknowledgement, use `intercom-send --wait-reply 60 worker 'Please acknowledge this task.'`. It keeps its independent identity connected until the first message from that recipient or the timeout, prints delivery and reply as separate JSON lines, and exits with code 2 if no reply arrives. The recipient can use either `send` or a correlated reply. For ongoing delegation, use a persistent Codex MCP/`coi` session so questions and completion reports remain reachable after the acknowledgement. Do not send a task from a temporary `IntercomClient` and immediately disconnect when you expect responses.
+
 It prints one JSON result with `accepted`, `delivered`, `messageId`, and optional failure `code`/`reason`. Exit status is zero only for acknowledged delivery. It inherits the routing scope, but never inherits `PI_INTERCOM_SESSION_ID` or `AGENT_INTERCOM_SESSION_ID`: every invocation registers an independent sender, leaves running Pi sessions intact, and disconnects after sending. It is send-only; use the session tools for reply-tracked asks.
 
 When a second runtime claims the same stable session ID, Intercom reports `SESSION_ID_IN_USE`, pauses automatic reconnect, and preserves the original owner. Switch to a different session, or release the duplicate owner and `/reload`. `intercom_status` exposes the conflict as structured data rather than silently treating it as a temporary outage. Updating this adapter does not require restarting a compatible v4 broker.

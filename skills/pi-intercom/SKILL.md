@@ -91,6 +91,8 @@ A deferred ask has `ok: true` and `data.pending: true`; it is not a failure. Do 
 
 For shell notifications, use `intercom-send <session-name-or-id> <message>`. It registers an independent send-only identity and prints JSON; it does not take over the current Pi session or track replies.
 
+For a shell handoff requiring an acknowledgement, use `intercom-send --wait-reply 60 <recipient> <message>` to keep the sender connected until the first response or timeout. Use a persistent agent session for ongoing questions and completion reports. A temporary sender that disconnects after delivery cannot receive replies; `Session not found` on the return path does not mean the original task was undelivered.
+
 ## Core Patterns
 
 ### Pattern 1: Planner-Worker Delegation

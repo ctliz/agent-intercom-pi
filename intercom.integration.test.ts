@@ -2202,6 +2202,63 @@ test("CLI sends with an independent identity even inside an existing Pi session"
   }
 });
 
+test("CLI keeps its return address alive for delayed send and reply acknowledgements", { concurrency: false }, async () => {
+  const { planner, cleanup } = await setupClients();
+  try {
+    for (const correlated of [false, true]) {
+      const received = once(planner, "message") as Promise<[SessionInfo, Message]>;
+      const child = spawn(process.execPath, [path.join(repoDir, "bin/intercom-send.mjs"), "--wait-reply", "5", "planner", "Please acknowledge"], {
+        cwd: repoDir, env: process.env, stdio: ["ignore", "pipe", "pipe"],
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk) => { stdout += chunk; });
+      child.stderr.on("data", (chunk) => { stderr += chunk; });
+      const closed = once(child, "close");
+      try {
+        const [from, message] = await received;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        assert.ok((await planner.listSessions()).some((session) => session.id === from.id));
+        const result = await planner.send(from.id, { text: "Received", ...(correlated ? { replyTo: message.id } : {}) });
+        assert.equal(result.delivered, true);
+        const [code] = await closed;
+        assert.equal(code, 0, stderr || stdout);
+        const [delivery, reply] = stdout.trim().split("\n").map((line) => JSON.parse(line));
+        assert.equal(delivery.delivered, true);
+        assert.equal(reply.type, "reply");
+        assert.equal(reply.from.id, planner.sessionId);
+        assert.equal(reply.message.content.text, "Received");
+      } finally {
+        if (child.exitCode === null) child.kill();
+      }
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
+test("CLI reply timeout preserves successful delivery and removes the temporary session", { concurrency: false }, async () => {
+  const { planner, cleanup } = await setupClients();
+  try {
+    const received = once(planner, "message") as Promise<[SessionInfo, Message]>;
+    const child = spawn(process.execPath, [path.join(repoDir, "bin/intercom-send.mjs"), "--wait-reply", "0.1", "planner", "No response expected"], {
+      cwd: repoDir, env: process.env, stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    const closed = once(child, "close");
+    const [from] = await received;
+    const [code] = await closed;
+    assert.equal(code, 2, stdout);
+    const [delivery, timeout] = stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(delivery.delivered, true);
+    assert.equal(timeout.code, "REPLY_TIMEOUT");
+    assert.ok(!(await planner.listSessions()).some((session) => session.id === from.id));
+  } finally {
+    await cleanup();
+  }
+});
+
 test("agent_end does not advertise idle while retries or compaction remain", { concurrency: false }, async () => {
   const { default: piIntercomExtension } = await import("./index.ts");
   const { planner, cleanup } = await setupClients();

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.14.4 - 2026-10-11
+
+- Add `intercom-send --wait-reply <seconds>` to keep the temporary return address alive until a reply, disconnect, or timeout. Support ordinary acknowledgements and correlated replies without replacing an existing Pi session.
+- Document persistent return addresses for delegated tasks and test delayed replies and timeout cleanup.
+
 ## 0.14.3 - 2026-10-09
 
 - Keep `@ctliz/agent-intercom-pi` as the only supported npm release name. Stop publishing the `@ctliz/pi-intercom` alias while retaining its historical versions.
