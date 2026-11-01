@@ -382,6 +382,8 @@ interface CapturedTool {
   name: string;
   parameters?: unknown;
   outputSchema?: unknown;
+  namespace?: { name: string; aliases?: readonly string[]; description?: string; instructions?: string };
+  annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean; openWorldHint?: boolean };
   execute: (toolCallId: string, params: Record<string, unknown>, signal: AbortSignal, onUpdate: unknown, ctx: unknown) => Promise<CapturedToolResult>;
   renderCall?: (args: Record<string, unknown>, theme: RenderTheme, context: Record<string, unknown>) => RenderedComponent;
   renderResult?: (result: RenderToolResult, options: { expanded?: boolean; isPartial?: boolean }, theme: RenderTheme, context: Record<string, unknown>) => RenderedComponent;
@@ -409,6 +411,8 @@ function createExtensionHarness(sessionName: string | (() => string) = "child-wo
   const events = new EventEmitter();
   const lifecycleHandlers = new Map<string, Array<(event: unknown, ctx: unknown) => unknown>>();
   const commands = new Map<string, (args: string, ctx: unknown) => unknown>();
+  const messageRenderers = new Map<string, (message: { details?: unknown }, options: { expanded: boolean; outputPad: number }, theme: RenderTheme) => RenderedComponent | undefined>();
+  const toolRenderers: Array<(toolName: string, next: () => { renderCall?: CapturedTool["renderCall"]; renderResult?: CapturedTool["renderResult"] } | undefined) => { renderCall?: CapturedTool["renderCall"]; renderResult?: CapturedTool["renderResult"] } | undefined> = [];
   const tools: CapturedTool[] = [];
   const entries: Array<{ type: string; data: unknown }> = [];
   const sentMessages: Array<{ message: { customType?: string; content?: string; details?: unknown }; options?: { triggerTurn?: boolean; deliverAs?: string } }> = [];
@@ -426,7 +430,12 @@ function createExtensionHarness(sessionName: string | (() => string) = "child-wo
       handlers.push(handler);
       lifecycleHandlers.set(event, handlers);
     },
-    registerMessageRenderer: () => undefined,
+    registerMessageRenderer: (customType: string, renderer: (message: { details?: unknown }, options: { expanded: boolean; outputPad: number }, theme: RenderTheme) => RenderedComponent | undefined) => {
+      messageRenderers.set(customType, renderer);
+    },
+    registerToolRenderer: (resolver: (typeof toolRenderers)[number]) => {
+      toolRenderers.push(resolver);
+    },
     registerTool: (tool: CapturedTool) => {
       tools.push(tool);
     },
@@ -457,6 +466,8 @@ function createExtensionHarness(sessionName: string | (() => string) = "child-wo
     ctx,
     tools,
     commands,
+    messageRenderers,
+    toolRenderers,
     entries,
     sentMessages,
     async emitLifecycle(event: string, payload: unknown = {}, eventContext: unknown = ctx) {
@@ -1984,9 +1995,27 @@ test("intercom tool renders compact call and result rows", async () => {
   const errorText = renderToText(intercomTool.renderResult({
     content: [{ type: "text", text: "Missing 'to' or 'message' parameter" }],
     details: { error: true, reason: "Missing target" },
-  }, { isPartial: false, expanded: true }, renderTheme, { isError: false, expanded: true }));
+  }, { isPartial: false, expanded: true }, renderTheme, { isError: false, expanded: true, durationMs: 1420 }));
   assert.match(errorText, /✗ Missing 'to' or 'message' parameter/);
+  assert.match(errorText, /Took 1\.4s/);
   assert.match(errorText, /Reason: Missing target/);
+
+  const resolver = harness.toolRenderers[0]!;
+  assert.ok(resolver, "fallback tool renderer resolver should be registered");
+  const unregisteredSupervisor = resolver("contact_supervisor", () => undefined);
+  assert.ok(unregisteredSupervisor?.renderCall);
+  assert.match(renderToText(unregisteredSupervisor.renderCall({ reason: "need_decision", message: "Resumed call" }, renderTheme, {})), /contact_supervisor need_decision/);
+
+  const batchRenderer = harness.messageRenderers.get("intercom_message")!;
+  const now = Date.now();
+  const makeBatchEntry = (id: string) => ({
+    from: { id, name: id, cwd: "/tmp", model: "m", pid: 1, startedAt: now, lastActivity: now },
+    message: { id, timestamp: now, content: { text: `msg-${id}` } },
+    receivedAt: now,
+    bodyText: `msg-${id}`,
+  });
+  const paddedBatch = batchRenderer({ details: { entries: [makeBatchEntry("a"), makeBatchEntry("b")] } }, { expanded: false, outputPad: 3 }, renderTheme)!;
+  assert.match(paddedBatch.render(80)[0] ?? "", /^   /);
 });
 
 test("intercom tool result hook marks failed details as errors", async () => {
@@ -2058,7 +2087,21 @@ test("all intercom tools declare codemode output and preserve error data", { con
   const harness = createExtensionHarness("codemode-worker");
   try {
     piIntercomExtension(harness.pi as never);
-    for (const tool of harness.tools) assert.ok(tool.outputSchema, `${tool.name} outputSchema`);
+    for (const tool of harness.tools) {
+      assert.ok(tool.outputSchema, `${tool.name} outputSchema`);
+      assert.equal(tool.namespace?.name, "intercom", `${tool.name} namespace`);
+      assert.deepEqual(tool.namespace?.aliases, ["pi-intercom", "agent-intercom"]);
+      assert.equal(tool.annotations?.openWorldHint, false, `${tool.name} openWorldHint`);
+    }
+    for (const readOnlyName of ["intercom_list", "intercom_pending", "intercom_status", "intercom_team"]) {
+      const readOnlyTool = harness.tools.find((tool) => tool.name === readOnlyName)!;
+      assert.equal(readOnlyTool.annotations?.readOnlyHint, true, `${readOnlyName} readOnlyHint`);
+    }
+    for (const writeName of ["intercom_send", "intercom_ask", "intercom_reply", "intercom_join"]) {
+      const writeTool = harness.tools.find((tool) => tool.name === writeName)!;
+      assert.equal(writeTool.annotations?.readOnlyHint, false, `${writeName} readOnlyHint`);
+      assert.equal(writeTool.annotations?.destructiveHint, false, `${writeName} destructiveHint`);
+    }
     await harness.emitLifecycle("session_start");
     await waitForSessionByName(planner, "codemode-worker");
     const execute = (name: string, params: Record<string, unknown> = {}) => harness.tools.find((tool) => tool.name === name)!.execute("codemode-call", params, new AbortController().signal, undefined, harness.ctx);
@@ -2112,10 +2155,22 @@ test("Pi codemode sandbox receives structured success and error results", { conc
       const exists = "intercom_send" in tools;
       let unknownMemberRejected = false;
       try { typeof tools.intercom_sned; } catch (error) { unknownMemberRejected = true; }
+      const ns = await describeNamespace("intercom");
+      const aliasNs = await describeNamespace("pi-intercom");
+      const searched = await searchTools("pending", { namespace: "agent-intercom" });
       const status = await tools.intercom_status({});
       const failure = await tools.intercom_send({ to: "missing-sandbox-recipient", message: "test" });
       const sent = await tools.intercom_send({ to: "planner", message: "real codemode sandbox" });
-      return { exists, unknownMemberRejected, connected: status.data.connected, failure: failure.ok, delivered: sent.data.delivered };
+      return {
+        exists,
+        unknownMemberRejected,
+        nsName: ns?.name,
+        aliasMatched: aliasNs?.name === "intercom",
+        foundPending: searched.some((entry) => entry.name === "intercom_pending"),
+        connected: status.data.connected,
+        failure: failure.ok,
+        delivered: sent.data.delivered,
+      };
     `;
     // Supply a synthetic assistant call, exercising real nested hooks and QuickJS without a paid model request.
     session.sessionManager.appendMessage({
@@ -2130,6 +2185,9 @@ test("Pi codemode sandbox receives structured success and error results", { conc
     const text = result.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
     assert.match(text, /"exists":true/);
     assert.match(text, /"unknownMemberRejected":true/);
+    assert.match(text, /"nsName":"intercom"/);
+    assert.match(text, /"aliasMatched":true/);
+    assert.match(text, /"foundPending":true/);
     assert.match(text, /"connected":true/);
     assert.match(text, /"failure":false/);
     assert.match(text, /"delivered":true/);
@@ -2317,6 +2375,11 @@ test("sessions publish automatic lifecycle status", { concurrency: false }, asyn
     await harness.emitLifecycle("tool_execution_end", { toolCallId: "tool-2", toolName: "read" });
     await waitForSessionStatus(planner, "status-worker", "thinking");
 
+    await harness.emitLifecycle("ui_prompt_start", { type: "ui_prompt_start", reason: "ui_prompt", kind: "confirm", title: "Approve?" });
+    await waitForSessionStatus(planner, "status-worker", "blocked");
+    await harness.emitLifecycle("ui_prompt_end", { type: "ui_prompt_end", reason: "ui_prompt", kind: "confirm", title: "Approve?" });
+    await waitForSessionStatus(planner, "status-worker", "thinking");
+
     const listTool = harness.tools.find((tool) => tool.name === "intercom_list")!;
     for (let run = 0; run < 2; run += 1) {
       await harness.emitLifecycle("agent_end");
@@ -2389,6 +2452,27 @@ test("idle name poll propagates /name changes without other activity", { concurr
   }
 });
 
+test("session_info_changed updates presence name immediately without waiting for poll", { concurrency: false }, async () => {
+  const { planner, cleanup } = await setupClients();
+  let sessionName = "instant-name-before";
+  const harness = createExtensionHarness(() => sessionName, { hasUI: true });
+
+  try {
+    await withChildOrchestratorEnv({ namePollMs: "60000" }, async () => {
+      const { default: piIntercomExtension } = await import("./index.ts");
+      piIntercomExtension(harness.pi as never);
+      await harness.emitLifecycle("session_start");
+      await waitForSessionByName(planner, "instant-name-before");
+      sessionName = "instant-name-after";
+      await harness.emitLifecycle("session_info_changed", { type: "session_info_changed", name: sessionName });
+      await waitForSessionByName(planner, "instant-name-after");
+    });
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
+    await cleanup();
+  }
+});
+
 test("owned empty RPC peers are not classified as provider discovery probes", () => {
   const ctx = {
     mode: "rpc",
@@ -2413,7 +2497,13 @@ test("empty RPC provider probes defer broker registration until the first real t
     await new Promise((resolve) => setTimeout(resolve, 25));
     assert.equal((await planner.listSessions()).some((session) => session.id === "session-rpc-provider-probe"), false);
 
-    await harness.emitLifecycle("before_agent_start", { systemPrompt: "test" });
+    await harness.emitLifecycle("before_agent_start", {
+      type: "before_agent_start",
+      messageType: "custom",
+      message: { role: "custom", customType: "intercom_message", content: "wake", display: true, timestamp: Date.now() },
+      systemPrompt: "test",
+      systemPromptOptions: { selectedTools: [] },
+    });
     const registered = await waitForSessionId(planner, "session-rpc-provider-probe");
     assert.equal(registered.name, "rpc-provider-probe");
   } finally {

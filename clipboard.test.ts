@@ -42,9 +42,9 @@ test("copyTextToClipboard handles wl-copy helpers that daemonize", { skip: proce
     process.env.PI_INTERCOM_FAKE_CLIPBOARD_OUT = outFile;
 
     const start = Date.now();
-    const result = copyTextToClipboard("handoff text");
+    const result = await copyTextToClipboard("handoff text");
 
-    assert.deepEqual(result, { ok: true, method: "wl-copy" });
+    assert.deepEqual(result, { ok: true });
     assert.ok(Date.now() - start < 500, "wl-copy should not block on daemonized descendants");
     assert.equal(await readEventually(outFile), "handoff text");
   } finally {

@@ -1,8 +1,7 @@
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { copyToClipboard, type ExtensionAPI, type ExtensionContext, type ToolAnnotations, type ToolDefinition, type ToolNamespace, type ToolRenderers } from "@earendil-works/pi-coding-agent";
 import { intercomOutputSchema, structuredIntercomResult } from "./tool-result.ts";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { randomUUID } from "crypto";
-import { spawn, spawnSync } from "child_process";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import { IntercomClient, type SendResult } from "./broker/client.ts";
@@ -610,63 +609,40 @@ export function formatContactInstruction(contact: { target: string; id: string; 
 
 interface ClipboardCopyResult {
   ok: boolean;
-  method?: string;
   error?: string;
 }
 
-function runDetachedClipboardCommand(command: string, args: string[], text: string): ClipboardCopyResult {
-  const found = spawnSync("which", [command], { stdio: "ignore", timeout: 1000, shell: false });
-  if (found.status !== 0) return { ok: false, error: `${command} not found` };
-
+export async function copyTextToClipboard(text: string): Promise<ClipboardCopyResult> {
   try {
-    const proc = spawn(command, args, { stdio: ["pipe", "ignore", "ignore"], shell: false });
-    proc.stdin.on("error", () => {
-      // Ignore EPIPE if the clipboard helper exits early.
-    });
-    proc.stdin.write(text);
-    proc.stdin.end();
-    proc.unref();
-    return { ok: true, method: command };
+    await copyToClipboard(text);
+    return { ok: true };
   } catch (error) {
     return { ok: false, error: getErrorMessage(error) };
   }
 }
 
-function runClipboardCommand(command: string, args: string[], text: string): ClipboardCopyResult {
-  if (command === "wl-copy") return runDetachedClipboardCommand(command, args, text);
+const INTERCOM_TOOL_NAMESPACE: ToolNamespace = {
+  name: "intercom",
+  aliases: ["pi-intercom", "agent-intercom"],
+  description: "Local session-to-session messaging, pending asks, and task teams.",
+  instructions:
+    "Every Intercom tool returns { ok, text, data } in codemode. Check ok first; a deferred ask returns ok: true with data.pending: true. Keep at most one unresolved ask per recipient.",
+};
 
-  const result = spawnSync(command, args, {
-    input: text,
-    encoding: "utf8",
-    timeout: 2000,
-    stdio: ["pipe", "ignore", "pipe"],
-    shell: false,
-  });
-  if (result.status === 0) return { ok: true, method: command };
-  if (result.error) return { ok: false, error: result.error.message };
-  return { ok: false, error: result.stderr?.toString().trim() || `${command} exited ${result.status}` };
-}
+const READ_ONLY_LOCAL_ANNOTATIONS: ToolAnnotations = {
+  readOnlyHint: true,
+  openWorldHint: false,
+};
 
-export function copyTextToClipboard(text: string): ClipboardCopyResult {
-  const candidates: Array<[string, string[]]> = [];
-  if (process.platform === "darwin") candidates.push(["pbcopy", []]);
-  else if (process.platform === "win32") candidates.push(["clip.exe", []]);
-  else {
-    if (process.env.WAYLAND_DISPLAY) candidates.push(["wl-copy", []]);
-    if (process.env.DISPLAY) {
-      candidates.push(["xclip", ["-selection", "clipboard"]]);
-      candidates.push(["xsel", ["--clipboard", "--input"]]);
-    }
-    candidates.push(["clip.exe", []]);
-  }
+const LOCAL_IPC_ANNOTATIONS: ToolAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: false,
+  openWorldHint: false,
+};
 
-  let lastError = "No clipboard command available";
-  for (const [command, args] of candidates) {
-    const result = runClipboardCommand(command, args, text);
-    if (result.ok) return result;
-    lastError = result.error ?? lastError;
-  }
-  return { ok: false, error: lastError };
+function formatRecordedToolDuration(durationMs: number): string {
+  return durationMs < 1000 ? `${Math.round(durationMs)}ms` : `${(durationMs / 1000).toFixed(1)}s`;
 }
 
 function getNamePollMs(): number {
@@ -683,6 +659,8 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   function registerIntercomTool(tool: ToolDefinition<any, any>): void {
     pi.registerTool({
       ...tool,
+      namespace: tool.namespace ?? INTERCOM_TOOL_NAMESPACE,
+      annotations: tool.annotations ?? LOCAL_IPC_ANNOTATIONS,
       outputSchema: intercomOutputSchema,
       async execute(...args) {
         return structuredIntercomResult(await tool.execute(...args));
@@ -722,6 +700,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   let runtimeGeneration = 0;
   let agentRunning = false;
   let lastRunAborted = false;
+  let uiPromptBlocked = false;
   const activeTools = new Map<string, string>();
   const replyTracker = new ReplyTracker();
   const registeredControlTypes = new Set<string>();
@@ -850,7 +829,13 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     const activeToolName = activeTools.values().next().value;
     const busy = agentRunning || getLiveContext()?.isIdle() === false;
     const settledStatus = lastRunAborted ? "cancelled" : "idle";
-    const lifecycleStatus = activeToolName ? `tool:${activeToolName}` : busy ? "thinking" : settledStatus;
+    const lifecycleStatus = uiPromptBlocked
+      ? "blocked"
+      : activeToolName
+        ? `tool:${activeToolName}`
+        : busy
+          ? "thinking"
+          : settledStatus;
     const queueStatus = inboundInbox?.size ? ` · inbox:${inboundInbox.size}` : "";
     const outboxStatus = client?.outboxSize ? ` · outbox:${client.outboxSize}` : "";
     return config.status ? `${lifecycleStatus}${queueStatus}${outboxStatus} · ${config.status}` : `${lifecycleStatus}${queueStatus}${outboxStatus}`;
@@ -1597,6 +1582,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     lastPresenceName = buildPresenceIdentity(pi, currentSessionId).name;
     agentRunning = false;
     lastRunAborted = false;
+    uiPromptBlocked = false;
     activeTools.clear();
     startNamePoll();
     if (authorizedRecovered.length > 0) scheduleInboundFlush(0);
@@ -1804,6 +1790,29 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }
     startSessionRuntime(ctx);
   });
+
+  pi.on("session_info_changed", (_event, ctx) => {
+    if (!getLiveContext(ctx)) {
+      return;
+    }
+    syncPresenceIdentity(currentSessionId ?? (configuredSessionId || ctx.sessionManager.getSessionId()));
+  });
+
+  pi.on("ui_prompt_start", (_event, ctx) => {
+    if (!getLiveContext(ctx)) {
+      return;
+    }
+    uiPromptBlocked = true;
+    syncPresenceStatus();
+  });
+
+  pi.on("ui_prompt_end", (_event, ctx) => {
+    if (!getLiveContext(ctx)) {
+      return;
+    }
+    uiPromptBlocked = false;
+    syncPresenceStatus();
+  });
   
   pi.on("session_shutdown", async () => {
     unsubscribeControlRegistration();
@@ -1827,6 +1836,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     controlRegistrationGraceUntil = 0;
     agentRunning = false;
     lastRunAborted = false;
+    uiPromptBlocked = false;
     activeTools.clear();
     if (client) {
       await client.disconnect(true);
@@ -1922,7 +1932,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         const timing = formatMessageTiming({ sentAt: entry.message.timestamp, receivedAt: entry.receivedAt, readAt: entry.readAt });
         return `${formatIncomingEntry(entry, { index: index + 1, total: entries.length })}${timing ? `\n\n${theme.fg("dim", timing)}` : ""}`;
       }).join("\n\n---\n\n");
-      return new Text(batchText, 0, 0);
+      return new Text(batchText, options.outputPad ?? 0, 0);
     }
     const entry = entries[0]!;
     return new InlineMessageComponent(entry.from, entry.message, theme, entry.replyCommand, entry.bodyText, !options.expanded, entry.receivedAt, entry.readAt);
@@ -1954,6 +1964,49 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       return { isError: true };
     }
   });
+
+  const contactSupervisorRenderers: ToolRenderers = {
+    renderCall(args, theme) {
+      const record = args && typeof args === "object" ? args as Record<string, unknown> : undefined;
+      const reason = typeof record?.reason === "string" ? record.reason : "contact";
+      const messagePreview = previewText(record?.message, 96);
+      const interview = record?.interview && typeof record.interview === "object" ? record.interview as { title?: unknown } : undefined;
+      let text = theme.fg("toolTitle", theme.bold("contact_supervisor "));
+      text += theme.fg(reason === "need_decision" ? "warning" : reason === "progress_update" ? "muted" : "accent", reason);
+      if (typeof interview?.title === "string" && interview.title.trim()) {
+        text += " " + theme.fg("accent", interview.title.trim());
+      }
+      if (messagePreview) {
+        text += "\n  " + theme.fg("dim", messagePreview);
+      }
+      return new Text(text, 0, 0);
+    },
+    renderResult(result, { isPartial }, theme, context) {
+      if (isPartial) {
+        return new Text(theme.fg("warning", "Waiting for supervisor..."), 0, 0);
+      }
+      const details = result.details as { delivered?: boolean; error?: boolean; messageId?: string; reason?: string; structuredReplyParseError?: string; sentAt?: number; deliveredAt?: number } | undefined;
+      const textContent = firstTextContent(result);
+      const failed = Boolean(context.isError || details?.error === true || details?.delivered === false);
+      const parseWarning = typeof details?.structuredReplyParseError === "string";
+      let text = failed
+        ? theme.fg("error", "✗ ")
+        : parseWarning
+          ? theme.fg("warning", "⚠ ")
+          : theme.fg("success", "✓ ");
+      text += theme.fg(failed ? "error" : "text", textContent);
+      const timing = formatMessageTiming({ sentAt: details?.sentAt, deliveredAt: details?.deliveredAt });
+      if (timing) {
+        text += "\n" + theme.fg("dim", `  ${timing}`);
+      } else if (typeof context?.durationMs === "number" && context.durationMs >= 0) {
+        text += "\n" + theme.fg("dim", `  Took ${formatRecordedToolDuration(context.durationMs)}`);
+      }
+      if (parseWarning) {
+        text += "\n" + theme.fg("warning", `Structured reply parse issue: ${details.structuredReplyParseError}`);
+      }
+      return new Text(text, 0, 0);
+    },
+  };
 
   const childOrchestratorMetadata = readChildOrchestratorMetadata();
   if (childOrchestratorMetadata) {
@@ -2197,39 +2250,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
           };
         }
       },
-      renderCall(args, theme) {
-        const reason = typeof args.reason === "string" ? args.reason : "contact";
-        const messagePreview = previewText(args.message, 96);
-        const interview = args.interview && typeof args.interview === "object" ? args.interview as { title?: unknown } : undefined;
-        let text = theme.fg("toolTitle", theme.bold("contact_supervisor "));
-        text += theme.fg(reason === "need_decision" ? "warning" : reason === "progress_update" ? "muted" : "accent", reason);
-        if (typeof interview?.title === "string" && interview.title.trim()) {
-          text += " " + theme.fg("accent", interview.title.trim());
-        }
-        if (messagePreview) {
-          text += "\n  " + theme.fg("dim", messagePreview);
-        }
-        return new Text(text, 0, 0);
-      },
-      renderResult(result, { isPartial }, theme, context) {
-        if (isPartial) {
-          return new Text(theme.fg("warning", "Waiting for supervisor..."), 0, 0);
-        }
-        const details = result.details as { delivered?: boolean; error?: boolean; messageId?: string; reason?: string; structuredReplyParseError?: string } | undefined;
-        const textContent = firstTextContent(result);
-        const failed = Boolean(context.isError || details?.error === true || details?.delivered === false);
-        const parseWarning = typeof details?.structuredReplyParseError === "string";
-        let text = failed
-          ? theme.fg("error", "✗ ")
-          : parseWarning
-            ? theme.fg("warning", "⚠ ")
-            : theme.fg("success", "✓ ");
-        text += theme.fg(failed ? "error" : "text", textContent);
-        if (parseWarning) {
-          text += "\n" + theme.fg("warning", `Structured reply parse issue: ${details.structuredReplyParseError}`);
-        }
-        return new Text(text, 0, 0);
-      },
+      ...contactSupervisorRenderers,
     } as any);
   }
 
@@ -2768,6 +2789,8 @@ Usage:
       const timing = formatMessageTiming({ sentAt: details?.sentAt, deliveredAt: details?.deliveredAt });
       if (timing) {
         text += "\n" + theme.fg("dim", `  ${timing}`);
+      } else if (typeof context?.durationMs === "number" && context.durationMs >= 0) {
+        text += "\n" + theme.fg("dim", `  Took ${formatRecordedToolDuration(context.durationMs)}`);
       }
       if (details?.reason && context.expanded) {
         text += "\n" + theme.fg("dim", `Reason: ${details.reason}`);
@@ -2848,6 +2871,7 @@ Usage:
   registerIntercomTool({
     name: "intercom_team",
     label: "Intercom Team",
+    annotations: READ_ONLY_LOCAL_ANNOTATIONS,
     description: "Show all named task teams you belong to, or inspect one by name. Falls back to managed-team discovery when no named task team exists.",
     promptSnippet: "Find your task teams, managers, and teammates.",
     promptGuidelines: ["Use intercom_team to inspect your teams. A session can belong to multiple teams, with a different manager in each; specify `team` when the task is ambiguous."],
@@ -2950,6 +2974,7 @@ Usage:
     registerIntercomTool({
       name: definition.name,
       label: definition.label,
+      annotations: READ_ONLY_LOCAL_ANNOTATIONS,
       description: definition.description,
       promptSnippet: definition.promptSnippet,
       parameters: definition.name === "intercom_pending"
@@ -2967,6 +2992,13 @@ Usage:
   if (config.legacyTool) {
     registerIntercomTool(legacyIntercomTool);
   }
+
+  const fallbackToolRenderers: Record<string, ToolRenderers> = {
+    contact_supervisor: contactSupervisorRenderers,
+    intercom: { renderCall: legacyIntercomTool.renderCall, renderResult: legacyIntercomTool.renderResult },
+    intercom_list: { renderCall: renderSplitCall("list"), renderResult: renderSplitResult },
+  };
+  pi.registerToolRenderer?.((toolName, next) => next() ?? fallbackToolRenderers[toolName]);
 
   async function resolveCurrentContact(ctx: ExtensionContext, generation = runtimeGeneration): Promise<{ target: string; name?: string; id: string; duplicateName: boolean } | undefined> {
     let contactClient: IntercomClient;
@@ -3018,7 +3050,8 @@ Usage:
       return;
     }
 
-    const copied = copyTextToClipboard(instruction);
+    const copied = await copyTextToClipboard(instruction);
+    if (!getLiveContext(liveContext, generation)) return;
     if (copied.ok) {
       notifyIfLive(liveContext, `Copied intercom contact target for another agent: ${contact.target}`, "info", generation);
       return;

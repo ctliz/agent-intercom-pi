@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.14.5 - 2026-11-01
+
+- Update the development and CI test baseline to Pi 1.4.0.
+- Delegate `/intercom-id` clipboard writes to Pi's `copyToClipboard` helper, picking up detached Linux clipboard helpers (`Ctrl+Z` suspend safety), `PI_CLIPBOARD_OSC52=1` / remote OSC 52 copies, WSL UTF-8 handling, and Termux support.
+- Declare the `intercom` tool namespace (with `pi-intercom` and `agent-intercom` aliases) and explicit local/read-only `annotations` on all Intercom tools for codemode, tool search, and permission extensions.
+- Synchronize `/name` changes immediately on `session_info_changed` and publish `blocked` presence status during `ui_prompt_start`/`ui_prompt_end` dialogs.
+- Register fallback tool renderers via `pi.registerToolRenderer` for conditionally registered tools (`contact_supervisor`, `intercom`, `intercom_list`), and respect `outputPad` and `durationMs` in custom message/tool renderers.
+
 ## 0.14.4 - 2026-10-11
 
 - Add `intercom-send --wait-reply <seconds>` to keep the temporary return address alive until a reply, disconnect, or timeout. Support ordinary acknowledgements and correlated replies without replacing an existing Pi session.

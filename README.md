@@ -17,9 +17,9 @@
 | AGY | [`agent-intercom-agy`](https://github.com/ctliz/agent-intercom-agy) |
 | Fleet lifecycle | [`agent-intercom-orchestrator`](https://github.com/ctliz/agent-intercom-orchestrator) |
 
-## Pi 1.1 compatibility and codemode
+## Pi 1.4 compatibility and codemode
 
-Version 0.14.3 is tested with Pi 1.1.0. Version 0.14.0 was tested with Pi 1.0.0, and 0.13.0 with Pi 0.99.1. The development test baseline now uses Pi 1.1.0; host-provided Pi modules remain peer dependencies, not runtime dependencies. The existing protocol v4 broker, durable queues, acknowledgements, and cross-harness routing are unchanged.
+Version 0.14.5 is tested with Pi 1.4.0. Version 0.14.3 was tested with Pi 1.1.0, 0.14.0 with Pi 1.0.0, and 0.13.0 with Pi 0.99.1. The development test baseline now uses Pi 1.4.0; host-provided Pi modules remain peer dependencies, not runtime dependencies. The existing protocol v4 broker, durable queues, acknowledgements, and cross-harness routing are unchanged.
 
 Pi 1.0 defaults to fullscreen; set `tuiMode` to `"regular"` or launch with `--tui-mode regular` to retain terminal scrollback. Codemode's shorter declarations preserve Intercom's structured `{ ok, text, data }` results and team guidelines. To check tool existence in a script, use `"intercom_send" in tools`, not `typeof tools.intercom_send`, because unknown members now throw. Restart existing Pi processes to use a newly installed Pi version; `/reload` only reloads resources inside the running version.
 
@@ -41,7 +41,7 @@ Concurrent sends and independent asks are supported; do not create two unresolve
 The package includes an `intercom-send` executable. Install the alias globally for a shell command, or run it without relying on Pi's private installation path:
 
 ```bash
-npm exec --yes --package=@ctliz/agent-intercom-pi@0.14.3 -- intercom-send worker 'Tests passed.'
+npm exec --yes --package=@ctliz/agent-intercom-pi@0.14.5 -- intercom-send worker 'Tests passed.'
 ```
 
 The default command disconnects after delivery and cannot receive a later reply. For a shell handoff requiring an acknowledgement, use `intercom-send --wait-reply 60 worker 'Please acknowledge this task.'`. It keeps its independent identity connected until the first message from that recipient or the timeout, prints delivery and reply as separate JSON lines, and exits with code 2 if no reply arrives. The recipient can use either `send` or a correlated reply. For ongoing delegation, use a persistent Codex MCP/`coi` session so questions and completion reports remain reachable after the acknowledgement. Do not send a task from a temporary `IntercomClient` and immediately disconnect when you expect responses.
@@ -802,7 +802,7 @@ Custom broker commands are trusted local configuration: anyone who can edit this
 }
 ```
 
-Pi-intercom publishes live session status automatically. Sessions register as `idle`, switch to `thinking` while the agent is running, and show `tool:<name>` during tool execution. They remain busy through automatic retries, compaction, and queued continuations until `agent_settled`. Normal settlement returns to `idle`; on Pi 1.1.0 or newer, `aborted: true` shows `cancelled` until the next run or session start. Older hosts without the `aborted` field continue to show `idle` after settlement. If `status` is set in config, it is appended as context instead of replacing the lifecycle status.
+Pi-intercom publishes live session status automatically. Sessions register as `idle`, switch to `thinking` while the agent is running, show `tool:<name>` during tool execution, and show `blocked` while waiting on a blocking UI prompt (`ui_prompt_start`/`ui_prompt_end`). They remain busy through automatic retries, compaction, and queued continuations until `agent_settled`. Normal settlement returns to `idle`; on Pi 1.1.0 or newer, `aborted: true` shows `cancelled` until the next run or session start. Older hosts without the `aborted` field continue to show `idle` after settlement. If `status` is set in config, it is appended as context instead of replacing the lifecycle status.
 
 By default, runtime state and config live under `~/.pi/agent/intercom`. If Pi is launched with `PI_CODING_AGENT_DIR`, pi-intercom uses `$PI_CODING_AGENT_DIR/intercom` instead, including `config.json`, broker PID/lock files, sockets, durable inboxes/outboxes, ask state, and launcher state. `PI_INTERCOM_ASK_WAIT_MS` controls the foreground ask wait (30 seconds by default); `PI_INTERCOM_ASK_TIMEOUT_MS` controls how long a deferred ask remains replyable (10 minutes by default).
 

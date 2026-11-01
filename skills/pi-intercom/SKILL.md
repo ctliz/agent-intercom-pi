@@ -80,7 +80,7 @@ all participating Pi sessions must load adapter 0.14.0 or newer.
 
 ## Codemode (Pi 0.99.1+)
 
-Active Intercom tools can be called from codemode as `await tools.intercom_send({...})`, `await tools.intercom_team({})`, and so on. Every result is `{ ok, text, data }`: check `ok`, then read structured delivery flags, session lists, team roster, or pending asks from `data`. Returned errors retain this object; invalid arguments, blocked calls, and thrown exceptions can still reject. Use `try/catch` or `Promise.allSettled()` for independent operations.
+Active Intercom tools belong to the `intercom` namespace (aliases `pi-intercom` and `agent-intercom`, inspectable via `await describeNamespace("intercom")`) and can be called from codemode as `await tools.intercom_send({...})`, `await tools.intercom_team({})`, and so on. Every result is `{ ok, text, data }`: check `ok`, then read structured delivery flags, session lists, team roster, or pending asks from `data`. Returned errors retain this object; invalid arguments, blocked calls, and thrown exceptions can still reject. Use `try/catch` or `Promise.allSettled()` for independent operations.
 
 ```javascript
 const result = await tools.intercom_send({ to: "worker", message: "Tests passed." });
@@ -171,7 +171,7 @@ Use the global list only when you need independently launched peers:
 
 ```typescript
 intercom_list({})
-// → Shows all connected sessions with names, cwd, models, and live status (`idle`, `thinking`, `tool:<name>`)
+// → Shows all connected sessions with names, cwd, models, and live status (`idle`, `thinking`, `tool:<name>`, `blocked`, `cancelled`)
 ```
 
 ### Pattern 5: Reply Naturally
